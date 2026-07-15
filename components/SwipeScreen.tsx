@@ -121,6 +121,8 @@ export default function SwipeScreen({ onDone }: Props) {
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
         onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], {
           useNativeDriver: false,
         }),
@@ -132,6 +134,11 @@ export default function SwipeScreen({ onDone }: Props) {
           } else {
             resetPosition();
           }
+        },
+        // 画面遷移直後など、他のジェスチャーに途中で制御を奪われた場合にも
+        // カードが指を離した位置で固まらないよう、必ず中央に戻す
+        onPanResponderTerminate: () => {
+          resetPosition();
         },
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

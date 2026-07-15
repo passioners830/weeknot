@@ -75,3 +75,8 @@ export async function addComment(highlightId: string, body: string): Promise<Com
     isMine: true,
   };
 }
+
+export async function deleteComment(commentId: string): Promise<void> {
+  const { error } = await supabase.from('comments').delete().eq('id', commentId);
+  if (error) throw error;
+}

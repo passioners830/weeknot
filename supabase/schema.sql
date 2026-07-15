@@ -116,6 +116,10 @@ create policy "circle_members: select if same circle" on public.circle_members
 create policy "circle_members: insert self" on public.circle_members
   for insert with check (user_id = auth.uid());
 
+-- circle_members: 自分自身の参加行だけ削除できる（サークルからの退出）
+create policy "circle_members: delete own" on public.circle_members
+  for delete using (user_id = auth.uid());
+
 -- 招待コードでサークルに参加するRPC
 -- (invite_codeでサークルを検索する処理はcircles/circle_membersのRLSを
 --  緩めずに済むよう、security definerで行う)
@@ -168,6 +172,13 @@ create policy "highlights: select visible" on public.highlights
 create policy "highlights: insert own" on public.highlights
   for insert with check (user_id = auth.uid());
 
+create policy "highlights: delete own" on public.highlights
+  for delete using (user_id = auth.uid());
+
+-- highlights: 公開範囲の後編集を自分の投稿にだけ許可
+create policy "highlights: update own" on public.highlights
+  for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+
 -- highlight_circles: 対象ハイライトの持ち主、またはそのサークルのメンバーが見える
 create policy "highlight_circles: select if highlight visible" on public.highlight_circles
   for select using (
@@ -180,6 +191,15 @@ create policy "highlight_circles: select if highlight visible" on public.highlig
 
 create policy "highlight_circles: insert by highlight owner" on public.highlight_circles
   for insert with check (
+    exists (
+      select 1 from public.highlights h
+      where h.id = highlight_circles.highlight_id and h.user_id = auth.uid()
+    )
+  );
+
+-- highlight_circles: 公開範囲の後編集（サークルの付け替え）のため、投稿の持ち主が削除できる
+create policy "highlight_circles: delete by highlight owner" on public.highlight_circles
+  for delete using (
     exists (
       select 1 from public.highlights h
       where h.id = highlight_circles.highlight_id and h.user_id = auth.uid()

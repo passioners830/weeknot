@@ -1,17 +1,33 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
+  Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Circle, getCircles } from '../lib/circles';
 import { getErrorMessage } from '../lib/errors';
-import { getHighlights, Highlight, Visibility } from '../lib/highlights';
+import {
+  deleteHighlight,
+  getHighlights,
+  updateHighlightVisibility,
+  Highlight,
+  Visibility,
+} from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { supabase } from '../lib/supabase';
+
+const VISIBILITY_OPTIONS: { value: Visibility; label: string }[] = [
+  { value: 'private', label: 'プライベート' },
+  { value: 'circle', label: 'サークル限定' },
+  { value: 'public', label: '全体公開' },
+];
 
 const VISIBILITY_LABEL: Record<Visibility, string> = {
   private: 'プライベート',
@@ -27,6 +43,13 @@ export default function HistoryScreen() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [photosByHighlight, setPhotosByHighlight] = useState<Record<string, string[]>>({});
   const [loadingPhotosId, setLoadingPhotosId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [circles, setCircles] = useState<Circle[]>([]);
+  const [editingHighlight, setEditingHighlight] = useState<Highlight | null>(null);
+  const [editVisibility, setEditVisibility] = useState<Visibility>('private');
+  const [editCircleIds, setEditCircleIds] = useState<string[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -36,6 +59,7 @@ export default function HistoryScreen() {
         } = await supabase.auth.getUser();
         setUserId(user?.id ?? null);
         setHighlights(await getHighlights());
+        setCircles(await getCircles());
       } catch (e) {
         setError(getErrorMessage(e, '履歴の取得に失敗しました'));
       } finally {
@@ -60,6 +84,79 @@ export default function HistoryScreen() {
       } finally {
         setLoadingPhotosId(null);
       }
+    }
+  };
+
+  const runDelete = async (highlight: Highlight) => {
+    setDeletingId(highlight.id);
+    try {
+      await deleteHighlight(highlight.id);
+      setHighlights((prev) => prev.filter((h) => h.id !== highlight.id));
+      if (expandedId === highlight.id) setExpandedId(null);
+    } catch (e) {
+      setError(getErrorMessage(e, '削除に失敗しました'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDelete = (highlight: Highlight) => {
+    // react-native-webのAlert.alertは何もしないダミー実装のため、
+    // Webではwindow.confirmを使う
+    if (Platform.OS === 'web') {
+      if (window.confirm('この投稿を削除しますか？\n写真とコメント・リアクションもすべて削除され、元に戻せません。')) {
+        runDelete(highlight);
+      }
+      return;
+    }
+
+    Alert.alert(
+      'この投稿を削除しますか？',
+      '写真とコメント・リアクションもすべて削除され、元に戻せません。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除する', style: 'destructive', onPress: () => runDelete(highlight) },
+      ]
+    );
+  };
+
+  const openEdit = (highlight: Highlight) => {
+    setEditingHighlight(highlight);
+    setEditVisibility(highlight.visibility);
+    setEditCircleIds(highlight.circleIds);
+    setEditError(null);
+  };
+
+  const closeEdit = () => {
+    setEditingHighlight(null);
+    setEditError(null);
+  };
+
+  const toggleEditCircle = (id: string) => {
+    setEditCircleIds((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingHighlight) return;
+    if (editVisibility === 'circle' && editCircleIds.length === 0) {
+      setEditError('サークルを1つ以上選んでください');
+      return;
+    }
+    setSavingEdit(true);
+    setEditError(null);
+    try {
+      const circleIds = editVisibility === 'circle' ? editCircleIds : [];
+      await updateHighlightVisibility(editingHighlight.id, editVisibility, circleIds);
+      setHighlights((prev) =>
+        prev.map((h) =>
+          h.id === editingHighlight.id ? { ...h, visibility: editVisibility, circleIds } : h
+        )
+      );
+      closeEdit();
+    } catch (e) {
+      setEditError(getErrorMessage(e, '更新に失敗しました'));
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -111,11 +208,92 @@ export default function HistoryScreen() {
                     <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
                   ))}
                 </ScrollView>
+
+                <View style={styles.actionRow}>
+                  <TouchableOpacity style={styles.editButton} onPress={() => openEdit(highlight)}>
+                    <Text style={styles.editButtonText}>公開範囲を編集</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => handleDelete(highlight)}
+                    disabled={deletingId === highlight.id}
+                  >
+                    {deletingId === highlight.id ? (
+                      <ActivityIndicator size="small" color="#e74c3c" />
+                    ) : (
+                      <Text style={styles.deleteButtonText}>この投稿を削除</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </TouchableOpacity>
         );
       })}
+
+      <Modal visible={!!editingHighlight} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>公開範囲を編集</Text>
+            <View style={styles.visibilityRow}>
+              {VISIBILITY_OPTIONS.map((opt) => (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={[
+                    styles.visibilityChip,
+                    editVisibility === opt.value && styles.visibilityChipActive,
+                  ]}
+                  onPress={() => setEditVisibility(opt.value)}
+                >
+                  <Text
+                    style={[
+                      styles.visibilityChipText,
+                      editVisibility === opt.value && styles.visibilityChipTextActive,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {editVisibility === 'circle' && (
+              <View style={styles.editCircleChips}>
+                {circles.map((circle) => (
+                  <TouchableOpacity
+                    key={circle.id}
+                    style={[
+                      styles.chip,
+                      editCircleIds.includes(circle.id) && styles.chipActive,
+                    ]}
+                    onPress={() => toggleEditCircle(circle.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        editCircleIds.includes(circle.id) && styles.chipTextActive,
+                      ]}
+                    >
+                      {circle.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {editError && <Text style={styles.error}>{editError}</Text>}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={closeEdit}>
+                <Text style={styles.modalCancel}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleSaveEdit} disabled={savingEdit}>
+                <Text style={styles.modalSave}>{savingEdit ? '保存中...' : '保存'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -184,5 +362,107 @@ const styles = StyleSheet.create({
     height: 120,
     borderRadius: 8,
     marginRight: 8,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 20,
+    marginTop: 12,
+  },
+  deleteButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+  },
+  deleteButtonText: {
+    fontSize: 13,
+    color: '#e74c3c',
+    fontWeight: '600',
+  },
+  editButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+  },
+  editButtonText: {
+    fontSize: 13,
+    color: '#333',
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCard: {
+    width: '85%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 14,
+  },
+  visibilityRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  visibilityChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  visibilityChipActive: {
+    backgroundColor: '#333',
+    borderColor: '#333',
+  },
+  visibilityChipText: {
+    fontSize: 13,
+    color: '#333',
+  },
+  visibilityChipTextActive: {
+    color: '#fff',
+  },
+  editCircleChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#ccc',
+  },
+  chipActive: {
+    backgroundColor: '#333',
+    borderColor: '#333',
+  },
+  chipText: {
+    fontSize: 13,
+    color: '#333',
+  },
+  chipTextActive: {
+    color: '#fff',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 20,
+    marginTop: 18,
+  },
+  modalCancel: {
+    color: '#888',
+    fontSize: 14,
+  },
+  modalSave: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

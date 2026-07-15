@@ -7,9 +7,10 @@ export const MAX_SELECTABLE_PHOTOS = 7;
 type Props = {
   photos: Photo[];
   onConfirm: (selected: Photo[]) => void;
+  onBack: () => void;
 };
 
-export default function SelectPhotosScreen({ photos, onConfirm }: Props) {
+export default function SelectPhotosScreen({ photos, onConfirm, onBack }: Props) {
   const [selectedIds, setSelectedIds] = useState<string[]>(
     photos.slice(0, MAX_SELECTABLE_PHOTOS).map((p) => p.id)
   );
@@ -22,8 +23,25 @@ export default function SelectPhotosScreen({ photos, onConfirm }: Props) {
     });
   };
 
+  if (photos.length === 0) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.emptyArea}>
+          <Text style={styles.emptyTitle}>キープした写真がありません</Text>
+          <Text style={styles.emptyText}>もう一度写真を整理し直しましょう</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={onBack}>
+            <Text style={styles.primaryButtonText}>整理に戻る</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
+      <TouchableOpacity style={styles.backLink} onPress={onBack}>
+        <Text style={styles.backLinkText}>← 整理に戻る</Text>
+      </TouchableOpacity>
       <Text style={styles.title}>投稿する写真を選択</Text>
       <Text style={styles.subtitle}>
         {selectedIds.length} / {MAX_SELECTABLE_PHOTOS} 枚選択中
@@ -72,6 +90,28 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 20,
     fontWeight: '600',
+  },
+  backLink: {
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  backLinkText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  emptyArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  emptyText: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 8,
   },
   subtitle: {
     fontSize: 14,

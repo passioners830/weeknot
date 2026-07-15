@@ -1,3 +1,4 @@
+import { deleteHighlightPhotos } from './photos';
 import { supabase } from './supabase';
 
 export type Visibility = 'private' | 'circle' | 'public';
@@ -109,4 +110,38 @@ export async function publishHighlight(params: {
     visibility: data.visibility as Visibility,
     circleIds: params.visibility === 'circle' ? params.circleIds : [],
   };
+}
+
+export async function updateHighlightVisibility(
+  highlightId: string,
+  visibility: Visibility,
+  circleIds: string[]
+): Promise<void> {
+  const { error } = await supabase.from('highlights').update({ visibility }).eq('id', highlightId);
+  if (error) throw error;
+
+  const { error: deleteError } = await supabase
+    .from('highlight_circles')
+    .delete()
+    .eq('highlight_id', highlightId);
+  if (deleteError) throw deleteError;
+
+  if (visibility === 'circle' && circleIds.length > 0) {
+    const { error: insertError } = await supabase
+      .from('highlight_circles')
+      .insert(circleIds.map((circleId) => ({ highlight_id: highlightId, circle_id: circleId })));
+    if (insertError) throw insertError;
+  }
+}
+
+export async function deleteHighlight(highlightId: string): Promise<void> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error('ログインしていません');
+
+  await deleteHighlightPhotos(user.id, highlightId);
+
+  const { error } = await supabase.from('highlights').delete().eq('id', highlightId);
+  if (error) throw error;
 }

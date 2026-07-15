@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  FlatList,
   Image,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -10,9 +13,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { addComment, getCommentsForHighlights, Comment } from '../lib/comments';
+import { addComment, deleteComment, getCommentsForHighlights, Comment } from '../lib/comments';
 import { getErrorMessage } from '../lib/errors';
-import { getFeed, FeedItem } from '../lib/highlights';
+import { deleteHighlight, getFeed, FeedItem } from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { getReactionsForHighlights, toggleReaction, ReactionSummary } from '../lib/reactions';
 
@@ -28,11 +31,11 @@ export default function FeedScreen() {
   const [items, setItems] = useState<FeedItem[]>([]);
   const [reactions, setReactions] = useState<Record<string, ReactionSummary[]>>({});
   const [comments, setComments] = useState<Record<string, Comment[]>>({});
-  const [photoUrls, setPhotoUrls] = useState<Record<string, string[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -40,16 +43,12 @@ export default function FeedScreen() {
       const feed = await getFeed();
       setItems(feed);
       const highlightIds = feed.map((f) => f.id);
-      const [summaries, commentMap, photoEntries] = await Promise.all([
+      const [summaries, commentMap] = await Promise.all([
         getReactionsForHighlights(highlightIds),
         getCommentsForHighlights(highlightIds),
-        Promise.all(
-          feed.map(async (item) => [item.id, await getHighlightPhotoUrls(item.authorId, item.id)] as const)
-        ),
       ]);
       setReactions(summaries);
       setComments(commentMap);
-      setPhotoUrls(Object.fromEntries(photoEntries));
     } catch (e) {
       setError(getErrorMessage(e, 'フィードの取得に失敗しました'));
     }
@@ -107,6 +106,51 @@ export default function FeedScreen() {
     }
   };
 
+  const handleDeleteComment = async (highlightId: string, commentId: string) => {
+    const prev = comments[highlightId] ?? [];
+    setComments((p) => ({
+      ...p,
+      [highlightId]: prev.filter((c) => c.id !== commentId),
+    }));
+    try {
+      await deleteComment(commentId);
+    } catch (e) {
+      setComments((p) => ({ ...p, [highlightId]: prev }));
+      setError(getErrorMessage(e, 'コメントの削除に失敗しました'));
+    }
+  };
+
+  const runDelete = async (highlightId: string) => {
+    setDeletingId(highlightId);
+    try {
+      await deleteHighlight(highlightId);
+      setItems((prev) => prev.filter((i) => i.id !== highlightId));
+    } catch (e) {
+      setError(getErrorMessage(e, '削除に失敗しました'));
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDelete = (highlightId: string) => {
+    // react-native-webのAlert.alertは何もしないダミー実装のため、Webではwindow.confirmを使う
+    if (Platform.OS === 'web') {
+      if (window.confirm('この投稿を削除しますか？\n写真とコメント・リアクションもすべて削除され、元に戻せません。')) {
+        runDelete(highlightId);
+      }
+      return;
+    }
+
+    Alert.alert(
+      'この投稿を削除しますか？',
+      '写真とコメント・リアクションもすべて削除され、元に戻せません。',
+      [
+        { text: 'キャンセル', style: 'cancel' },
+        { text: '削除する', style: 'destructive', onPress: () => runDelete(highlightId) },
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -116,89 +160,158 @@ export default function FeedScreen() {
   }
 
   return (
-    <ScrollView
+    <FlatList
+      data={items}
+      keyExtractor={(item) => item.id}
       contentContainerStyle={styles.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-    >
-      <Text style={styles.title}>フィード</Text>
+      ListHeaderComponent={
+        <>
+          <Text style={styles.title}>フィード</Text>
+          {error && <Text style={styles.error}>{error}</Text>}
+          {items.length === 0 && !error && (
+            <Text style={styles.empty}>まだ公開されたハイライトがありません</Text>
+          )}
+        </>
+      }
+      renderItem={({ item }) => (
+        <FeedCard
+          item={item}
+          reactions={reactions[item.id] ?? []}
+          comments={comments[item.id] ?? []}
+          draft={drafts[item.id] ?? ''}
+          deleting={deletingId === item.id}
+          onDraftChange={(text) => setDrafts((prev) => ({ ...prev, [item.id]: text }))}
+          onReact={(emoji) => handleReact(item.id, emoji)}
+          onSubmitComment={() => handleSubmitComment(item.id)}
+          onDeleteComment={(commentId) => handleDeleteComment(item.id, commentId)}
+          onDelete={() => handleDelete(item.id)}
+        />
+      )}
+    />
+  );
+}
 
-      {error && <Text style={styles.error}>{error}</Text>}
+type FeedCardProps = {
+  item: FeedItem;
+  reactions: ReactionSummary[];
+  comments: Comment[];
+  draft: string;
+  deleting: boolean;
+  onDraftChange: (text: string) => void;
+  onReact: (emoji: string) => void;
+  onSubmitComment: () => void;
+  onDeleteComment: (commentId: string) => void;
+  onDelete: () => void;
+};
 
-      {items.length === 0 && !error && (
-        <Text style={styles.empty}>まだ公開されたハイライトがありません</Text>
+// 写真は各カードが画面内に表示された（マウントされた）時だけ読み込む。
+// フィード全件分の写真を一度に読み込むと実機でメモリを圧迫し、画像が表示されなくなるため。
+function FeedCard({
+  item,
+  reactions,
+  comments,
+  draft,
+  deleting,
+  onDraftChange,
+  onReact,
+  onSubmitComment,
+  onDeleteComment,
+  onDelete,
+}: FeedCardProps) {
+  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getHighlightPhotoUrls(item.authorId, item.id)
+      .then((urls) => {
+        if (!cancelled) setPhotoUrls(urls);
+      })
+      .catch(() => {
+        // 写真の取得に失敗しても、投稿自体（テキスト・リアクション等）は表示を続ける
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.authorId, item.id]);
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHeader}>
+        <Text style={styles.author}>{item.isMine ? '自分' : item.authorName}</Text>
+        <View style={styles.cardHeaderRight}>
+          <Text style={styles.date}>{new Date(item.createdAt).toLocaleDateString('ja-JP')}</Text>
+          {item.isMine && (
+            <TouchableOpacity onPress={onDelete} disabled={deleting}>
+              {deleting ? (
+                <ActivityIndicator size="small" color="#e74c3c" />
+              ) : (
+                <Text style={styles.deleteLink}>削除</Text>
+              )}
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+      <Text style={styles.detail}>
+        {item.photoCount}枚のハイライト ・ {VISIBILITY_LABEL[item.visibility]}
+      </Text>
+
+      {photoUrls.length > 0 && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
+          {photoUrls.map((url, i) => (
+            <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
+          ))}
+        </ScrollView>
       )}
 
-      {items.map((item) => {
-        const itemReactions = reactions[item.id] ?? [];
-        return (
-          <View key={item.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.author}>{item.isMine ? '自分' : item.authorName}</Text>
-              <Text style={styles.date}>
-                {new Date(item.createdAt).toLocaleDateString('ja-JP')}
-              </Text>
-            </View>
-            <Text style={styles.detail}>
-              {item.photoCount}枚のハイライト ・ {VISIBILITY_LABEL[item.visibility]}
-            </Text>
+      <View style={styles.reactionRow}>
+        {QUICK_EMOJIS.map((emoji) => {
+          const summary = reactions.find((r) => r.emoji === emoji);
+          return (
+            <TouchableOpacity
+              key={emoji}
+              style={[styles.reactionChip, summary?.reactedByMe && styles.reactionChipActive]}
+              onPress={() => onReact(emoji)}
+            >
+              <Text style={styles.reactionEmoji}>{emoji}</Text>
+              {summary && summary.count > 0 && (
+                <Text
+                  style={[styles.reactionCount, summary.reactedByMe && styles.reactionCountActive]}
+                >
+                  {summary.count}
+                </Text>
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
-            {(photoUrls[item.id] ?? []).length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
-                {photoUrls[item.id].map((url, i) => (
-                  <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
-                ))}
-              </ScrollView>
+      <View style={styles.commentSection}>
+        {comments.map((comment) => (
+          <View key={comment.id} style={styles.commentRow}>
+            <Text style={styles.commentAuthor}>{comment.authorName}</Text>
+            <Text style={styles.commentBody}>{comment.body}</Text>
+            {comment.isMine && (
+              <TouchableOpacity onPress={() => onDeleteComment(comment.id)}>
+                <Text style={styles.commentDelete}>削除</Text>
+              </TouchableOpacity>
             )}
-
-            <View style={styles.reactionRow}>
-              {QUICK_EMOJIS.map((emoji) => {
-                const summary = itemReactions.find((r) => r.emoji === emoji);
-                return (
-                  <TouchableOpacity
-                    key={emoji}
-                    style={[styles.reactionChip, summary?.reactedByMe && styles.reactionChipActive]}
-                    onPress={() => handleReact(item.id, emoji)}
-                  >
-                    <Text style={styles.reactionEmoji}>{emoji}</Text>
-                    {summary && summary.count > 0 && (
-                      <Text
-                        style={[
-                          styles.reactionCount,
-                          summary.reactedByMe && styles.reactionCountActive,
-                        ]}
-                      >
-                        {summary.count}
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            <View style={styles.commentSection}>
-              {(comments[item.id] ?? []).map((comment) => (
-                <View key={comment.id} style={styles.commentRow}>
-                  <Text style={styles.commentAuthor}>{comment.authorName}</Text>
-                  <Text style={styles.commentBody}>{comment.body}</Text>
-                </View>
-              ))}
-              <View style={styles.commentInputRow}>
-                <TextInput
-                  style={styles.commentInput}
-                  placeholder="コメントを追加..."
-                  value={drafts[item.id] ?? ''}
-                  onChangeText={(text) => setDrafts((prev) => ({ ...prev, [item.id]: text }))}
-                  onSubmitEditing={() => handleSubmitComment(item.id)}
-                />
-                <TouchableOpacity onPress={() => handleSubmitComment(item.id)}>
-                  <Text style={styles.commentSend}>送信</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
           </View>
-        );
-      })}
-    </ScrollView>
+        ))}
+        <View style={styles.commentInputRow}>
+          <TextInput
+            style={styles.commentInput}
+            placeholder="コメントを追加..."
+            value={draft}
+            onChangeText={onDraftChange}
+            onSubmitEditing={onSubmitComment}
+          />
+          <TouchableOpacity onPress={onSubmitComment}>
+            <Text style={styles.commentSend}>送信</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -245,9 +358,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  cardHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   date: {
     fontSize: 12,
     color: '#999',
+  },
+  deleteLink: {
+    fontSize: 12,
+    color: '#e74c3c',
+    fontWeight: '600',
   },
   detail: {
     fontSize: 13,
@@ -311,6 +434,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#444',
     flex: 1,
+  },
+  commentDelete: {
+    fontSize: 11,
+    color: '#e74c3c',
   },
   commentInputRow: {
     flexDirection: 'row',

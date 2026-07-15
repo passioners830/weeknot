@@ -1,6 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   Modal,
   ScrollView,
@@ -10,7 +11,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { addCircle, Circle, getCircles, joinCircleByCode } from '../lib/circles';
+import {
+  addCircle,
+  Circle,
+  CircleMember,
+  getCircleMembers,
+  getCircles,
+  joinCircleByCode,
+  leaveCircle,
+} from '../lib/circles';
 import { getErrorMessage } from '../lib/errors';
 import { getHighlights, Highlight, publishHighlight, Visibility } from '../lib/highlights';
 import { uploadHighlightPhotos } from '../lib/photos';
@@ -43,6 +52,11 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [membersModalCircle, setMembersModalCircle] = useState<Circle | null>(null);
+  const [members, setMembers] = useState<CircleMember[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
 
   useEffect(() => {
     getCircles().then(setCircles);
@@ -94,6 +108,41 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
       setTimeout(() => setCopiedId(null), 1500);
     } catch {
       // クリップボードが使えない環境では静かに失敗させる（コードは画面に表示済みなので手動コピー可能）
+    }
+  };
+
+  const openMembersModal = async (circle: Circle) => {
+    setMembersModalCircle(circle);
+    setMembersError(null);
+    setMembersLoading(true);
+    try {
+      setMembers(await getCircleMembers(circle.id));
+    } catch (e) {
+      setMembersError(getErrorMessage(e, 'メンバーの取得に失敗しました'));
+    } finally {
+      setMembersLoading(false);
+    }
+  };
+
+  const closeMembersModal = () => {
+    setMembersModalCircle(null);
+    setMembers([]);
+    setMembersError(null);
+  };
+
+  const handleLeaveCircle = async () => {
+    if (!membersModalCircle) return;
+    setLeaving(true);
+    setMembersError(null);
+    try {
+      await leaveCircle(membersModalCircle.id);
+      setCircles((prev) => prev.filter((c) => c.id !== membersModalCircle.id));
+      setSelectedCircleIds((prev) => prev.filter((id) => id !== membersModalCircle.id));
+      closeMembersModal();
+    } catch (e) {
+      setMembersError(getErrorMessage(e, '退出に失敗しました'));
+    } finally {
+      setLeaving(false);
     }
   };
 
@@ -222,6 +271,9 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
                       {copiedId === circle.id ? 'コピーしました' : 'コピー'}
                     </Text>
                   </TouchableOpacity>
+                  <TouchableOpacity onPress={() => openMembersModal(circle)}>
+                    <Text style={styles.inviteMembers}>メンバー</Text>
+                  </TouchableOpacity>
                 </View>
               ))}
             </View>
@@ -283,6 +335,30 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
                 </View>
               </>
             )}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!membersModalCircle} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{membersModalCircle?.name} のメンバー</Text>
+            {membersLoading && <ActivityIndicator />}
+            {membersError && <Text style={styles.error}>{membersError}</Text>}
+            {!membersLoading &&
+              members.map((member) => (
+                <Text key={member.id} style={styles.memberRow}>
+                  {member.displayName}
+                </Text>
+              ))}
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={closeMembersModal}>
+                <Text style={styles.modalCancel}>閉じる</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleLeaveCircle} disabled={leaving}>
+                <Text style={styles.leaveText}>{leaving ? '退出中...' : 'このサークルを退出'}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -452,6 +528,21 @@ const styles = StyleSheet.create({
   inviteCopy: {
     fontSize: 12,
     color: '#333',
+    fontWeight: '600',
+  },
+  inviteMembers: {
+    fontSize: 12,
+    color: '#666',
+    textDecorationLine: 'underline',
+  },
+  memberRow: {
+    fontSize: 14,
+    color: '#333',
+    paddingVertical: 4,
+  },
+  leaveText: {
+    color: '#e74c3c',
+    fontSize: 14,
     fontWeight: '600',
   },
   error: {
