@@ -7,7 +7,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
 } from 'react-native';
 import { signIn, signUp } from '../lib/auth';
 import { getErrorMessage } from '../lib/errors';

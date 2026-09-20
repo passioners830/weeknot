@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   Dimensions,
   Image,
-  PanResponder,
   Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { deletePhotos, getRecentPhotos, requestPermission, resolveDisplayUri } from '../lib/mediaLibrary';
 import type { Photo } from '../types';
 
@@ -68,81 +68,87 @@ export default function SwipeScreen({ onDone }: Props) {
 
   useEffect(() => {
     loadPhotos();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const finish = async (finalKept: Photo[], finalDeletedIds: string[]) => {
-    if (Platform.OS !== 'web' && finalDeletedIds.length > 0) {
-      try {
-        await deletePhotos(finalDeletedIds);
-      } catch {
-        // ユーザーがOSの削除確認をキャンセルした場合などは何もしない
+  const finish = useCallback(
+    async (finalKept: Photo[], finalDeletedIds: string[]) => {
+      if (Platform.OS !== 'web' && finalDeletedIds.length > 0) {
+        try {
+          await deletePhotos(finalDeletedIds);
+        } catch {
+          // ユーザーがOSの削除確認をキャンセルした場合などは何もしない
+        }
       }
-    }
-    onDone(finalKept);
-  };
+      onDone(finalKept);
+    },
+    [onDone]
+  );
 
-  const forceSwipe = (direction: SwipeDirection) => {
-    if (index >= photos.length) return;
-    const x = direction === 'keep' ? SCREEN_WIDTH + 100 : -SCREEN_WIDTH - 100;
-    Animated.timing(position, {
-      toValue: { x, y: 0 },
-      duration: 250,
-      useNativeDriver: false,
-    }).start(() => onSwipeComplete(direction));
-  };
+  const onSwipeComplete = useCallback(
+    (direction: SwipeDirection) => {
+      const photo = photos[index];
+      if (!photo) return;
+      const nextKept = direction === 'keep' ? [...kept, photo] : kept;
+      const nextDeletedIds = direction === 'delete' ? [...deletedAssetIds, photo.id] : deletedAssetIds;
+      if (direction === 'keep') {
+        setKept(nextKept);
+      } else {
+        setDeletedAssetIds(nextDeletedIds);
+      }
+      position.setValue({ x: 0, y: 0 });
+      const nextIndex = index + 1;
+      setIndex(nextIndex);
+      if (nextIndex >= photos.length) {
+        finish(nextKept, nextDeletedIds);
+      }
+    },
+    [photos, index, kept, deletedAssetIds, position, finish]
+  );
 
-  const onSwipeComplete = (direction: SwipeDirection) => {
-    const photo = photos[index];
-    if (!photo) return;
-    const nextKept = direction === 'keep' ? [...kept, photo] : kept;
-    const nextDeletedIds = direction === 'delete' ? [...deletedAssetIds, photo.id] : deletedAssetIds;
-    if (direction === 'keep') {
-      setKept(nextKept);
-    } else {
-      setDeletedAssetIds(nextDeletedIds);
-    }
-    position.setValue({ x: 0, y: 0 });
-    const nextIndex = index + 1;
-    setIndex(nextIndex);
-    if (nextIndex >= photos.length) {
-      finish(nextKept, nextDeletedIds);
-    }
-  };
+  const forceSwipe = useCallback(
+    (direction: SwipeDirection) => {
+      if (index >= photos.length) return;
+      const x = direction === 'keep' ? SCREEN_WIDTH + 100 : -SCREEN_WIDTH - 100;
+      Animated.timing(position, {
+        toValue: { x, y: 0 },
+        duration: 250,
+        useNativeDriver: false,
+      }).start(() => onSwipeComplete(direction));
+    },
+    [index, photos, position, onSwipeComplete]
+  );
 
-  const resetPosition = () => {
+  const resetPosition = useCallback(() => {
     Animated.spring(position, {
       toValue: { x: 0, y: 0 },
       useNativeDriver: false,
     }).start();
-  };
+  }, [position]);
 
-  const panResponder = useMemo(
+  // photosをdepsから漏らすと、写真の非同期読み込みが終わる前に作られた
+  // 空配列を閉じ込めたままのforceSwipeが使われ続け、index >= photos.lengthの
+  // 判定で毎回スワイプが無視される（写真が表示された後も直らない）バグになるため必須
+  const panGesture = useMemo(
     () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderMove: Animated.event([null, { dx: position.x, dy: position.y }], {
-          useNativeDriver: false,
-        }),
-        onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx > SWIPE_THRESHOLD) {
+      Gesture.Pan()
+        .onUpdate((e) => {
+          position.setValue({ x: e.translationX, y: e.translationY });
+        })
+        .onEnd((e) => {
+          if (e.translationX > SWIPE_THRESHOLD) {
             forceSwipe('keep');
-          } else if (gesture.dx < -SWIPE_THRESHOLD) {
+          } else if (e.translationX < -SWIPE_THRESHOLD) {
             forceSwipe('delete');
           } else {
             resetPosition();
           }
-        },
-        // 画面遷移直後など、他のジェスチャーに途中で制御を奪われた場合にも
-        // カードが指を離した位置で固まらないよう、必ず中央に戻す
-        onPanResponderTerminate: () => {
-          resetPosition();
-        },
-      }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [index, kept, deletedAssetIds]
+        })
+        .onFinalize((e, success) => {
+          if (!success) {
+            resetPosition();
+          }
+        }),
+    [position, forceSwipe, resetPosition]
   );
 
   const rotate = position.x.interpolate({
@@ -212,23 +218,24 @@ export default function SwipeScreen({ onDone }: Props) {
             <Image source={{ uri: nextPhoto.uri }} style={styles.image} />
           </View>
         )}
-        <Animated.View
-          {...panResponder.panHandlers}
-          style={[
-            styles.card,
-            {
-              transform: [...position.getTranslateTransform(), { rotate }],
-            },
-          ]}
-        >
-          <Image source={{ uri: currentPhoto.uri }} style={styles.image} />
-          <Animated.View style={[styles.badge, styles.keepBadge, { opacity: keepOpacity }]}>
-            <Text style={styles.badgeText}>KEEP</Text>
+        <GestureDetector gesture={panGesture}>
+          <Animated.View
+            style={[
+              styles.card,
+              {
+                transform: [...position.getTranslateTransform(), { rotate }],
+              },
+            ]}
+          >
+            <Image source={{ uri: currentPhoto.uri }} style={styles.image} />
+            <Animated.View style={[styles.badge, styles.keepBadge, { opacity: keepOpacity }]}>
+              <Text style={styles.badgeText}>KEEP</Text>
+            </Animated.View>
+            <Animated.View style={[styles.badge, styles.deleteBadge, { opacity: deleteOpacity }]}>
+              <Text style={styles.badgeText}>DELETE</Text>
+            </Animated.View>
           </Animated.View>
-          <Animated.View style={[styles.badge, styles.deleteBadge, { opacity: deleteOpacity }]}>
-            <Text style={styles.badgeText}>DELETE</Text>
-          </Animated.View>
-        </Animated.View>
+        </GestureDetector>
       </View>
       <View style={styles.actions}>
         <TouchableOpacity

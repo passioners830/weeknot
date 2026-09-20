@@ -51,6 +51,26 @@ export async function ensureWeeklyReminderScheduled(): Promise<void> {
   });
 }
 
+// 動作確認用: 毎週リマインダーと同じ内容をその場ですぐに発火させる
+export async function sendTestReminderNow(): Promise<void> {
+  if (!(await ensurePermission())) return;
+
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'デフォルト',
+      importance: Notifications.AndroidImportance.DEFAULT,
+    });
+  }
+
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: '今週の写真を整理しよう',
+      body: 'たまった写真をスワイプして、今週のハイライトを選びましょう。',
+    },
+    trigger: null,
+  });
+}
+
 // リアクション・コメント通知を受け取るため、Expoプッシュトークンを取得してprofilesに保存する
 export async function registerPushToken(): Promise<void> {
   if (!(await ensurePermission())) return;

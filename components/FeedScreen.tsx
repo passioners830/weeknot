@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   Image,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -18,6 +20,8 @@ import { getErrorMessage } from '../lib/errors';
 import { deleteHighlight, getFeed, FeedItem } from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { getReactionsForHighlights, toggleReaction, ReactionSummary } from '../lib/reactions';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const VISIBILITY_LABEL: Record<FeedItem['visibility'], string> = {
   private: 'プライベート',
@@ -36,6 +40,7 @@ export default function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -160,35 +165,64 @@ export default function FeedScreen() {
   }
 
   return (
-    <FlatList
-      data={items}
-      keyExtractor={(item) => item.id}
-      contentContainerStyle={styles.container}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-      ListHeaderComponent={
-        <>
-          <Text style={styles.title}>フィード</Text>
-          {error && <Text style={styles.error}>{error}</Text>}
-          {items.length === 0 && !error && (
-            <Text style={styles.empty}>まだ公開されたハイライトがありません</Text>
+    <>
+      <FlatList
+        data={items}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.container}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        ListHeaderComponent={
+          <>
+            <Text style={styles.title}>フィード</Text>
+            {error && <Text style={styles.error}>{error}</Text>}
+            {items.length === 0 && !error && (
+              <Text style={styles.empty}>まだ公開されたハイライトがありません</Text>
+            )}
+          </>
+        }
+        renderItem={({ item }) => (
+          <FeedCard
+            item={item}
+            reactions={reactions[item.id] ?? []}
+            comments={comments[item.id] ?? []}
+            draft={drafts[item.id] ?? ''}
+            deleting={deletingId === item.id}
+            onDraftChange={(text) => setDrafts((prev) => ({ ...prev, [item.id]: text }))}
+            onReact={(emoji) => handleReact(item.id, emoji)}
+            onSubmitComment={() => handleSubmitComment(item.id)}
+            onDeleteComment={(commentId) => handleDeleteComment(item.id, commentId)}
+            onDelete={() => handleDelete(item.id)}
+            onOpenPhoto={(urls, index) => setViewer({ urls, index })}
+          />
+        )}
+      />
+
+      <Modal visible={!!viewer} transparent animationType="fade">
+        <View style={styles.viewerOverlay}>
+          <TouchableOpacity
+            style={styles.viewerClose}
+            onPress={() => setViewer(null)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={styles.viewerCloseText}>✕</Text>
+          </TouchableOpacity>
+          {viewer && (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              contentOffset={{ x: viewer.index * SCREEN_WIDTH, y: 0 }}
+            >
+              {viewer.urls.map((url, i) => (
+                <View key={i} style={styles.viewerPage}>
+                  <Image source={{ uri: url }} style={styles.viewerImage} resizeMode="contain" />
+                </View>
+              ))}
+            </ScrollView>
           )}
-        </>
-      }
-      renderItem={({ item }) => (
-        <FeedCard
-          item={item}
-          reactions={reactions[item.id] ?? []}
-          comments={comments[item.id] ?? []}
-          draft={drafts[item.id] ?? ''}
-          deleting={deletingId === item.id}
-          onDraftChange={(text) => setDrafts((prev) => ({ ...prev, [item.id]: text }))}
-          onReact={(emoji) => handleReact(item.id, emoji)}
-          onSubmitComment={() => handleSubmitComment(item.id)}
-          onDeleteComment={(commentId) => handleDeleteComment(item.id, commentId)}
-          onDelete={() => handleDelete(item.id)}
-        />
-      )}
-    />
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -203,6 +237,7 @@ type FeedCardProps = {
   onSubmitComment: () => void;
   onDeleteComment: (commentId: string) => void;
   onDelete: () => void;
+  onOpenPhoto: (urls: string[], index: number) => void;
 };
 
 // 写真は各カードが画面内に表示された（マウントされた）時だけ読み込む。
@@ -218,6 +253,7 @@ function FeedCard({
   onSubmitComment,
   onDeleteComment,
   onDelete,
+  onOpenPhoto,
 }: FeedCardProps) {
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
 
@@ -259,7 +295,9 @@ function FeedCard({
       {photoUrls.length > 0 && (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoRow}>
           {photoUrls.map((url, i) => (
-            <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
+            <TouchableOpacity key={i} onPress={() => onOpenPhoto(photoUrls, i)} activeOpacity={0.85}>
+              <Image source={{ uri: url }} style={styles.photoThumb} />
+            </TouchableOpacity>
           ))}
         </ScrollView>
       )}
@@ -458,5 +496,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#333',
     fontWeight: '600',
+  },
+  viewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+  },
+  viewerClose: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerCloseText: {
+    color: '#fff',
+    fontSize: 18,
+  },
+  viewerPage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.8,
   },
 });

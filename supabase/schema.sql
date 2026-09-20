@@ -113,8 +113,18 @@ create policy "circle_members: select if same circle" on public.circle_members
     or public.is_circle_member(circle_members.circle_id)
   );
 
-create policy "circle_members: insert self" on public.circle_members
-  for insert with check (user_id = auth.uid());
+-- circle_members: 直接テーブルに書き込めるのは「サークル作成者が自分自身を追加する場合」だけに限定する。
+-- (招待コード経由の参加はjoin_circle()のsecurity definer権限で行われるため、
+--  ここを絞ってもjoin_circle()経由の参加はブロックされない。
+--  これが無いと、招待コードを使わずcircle_idさえ分かれば誰でも直接参加できてしまう)
+create policy "circle_members: insert self as owner" on public.circle_members
+  for insert with check (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.circles c
+      where c.id = circle_members.circle_id and c.owner_id = auth.uid()
+    )
+  );
 
 -- circle_members: 自分自身の参加行だけ削除できる（サークルからの退出）
 create policy "circle_members: delete own" on public.circle_members
@@ -189,12 +199,16 @@ create policy "highlight_circles: select if highlight visible" on public.highlig
     or public.is_circle_member(highlight_circles.circle_id)
   );
 
-create policy "highlight_circles: insert by highlight owner" on public.highlight_circles
+-- highlight_circles: 投稿の持ち主であるだけでなく、共有先のサークルに
+-- 実際に参加していることも確認する（招待コード無しで他人のサークルに
+-- 投稿を紛れ込ませられないようにするため）
+create policy "highlight_circles: insert by highlight owner and circle member" on public.highlight_circles
   for insert with check (
     exists (
       select 1 from public.highlights h
       where h.id = highlight_circles.highlight_id and h.user_id = auth.uid()
     )
+    and public.is_circle_member(highlight_circles.circle_id)
   );
 
 -- highlight_circles: 公開範囲の後編集（サークルの付け替え）のため、投稿の持ち主が削除できる
@@ -306,6 +320,16 @@ begin
   );
 end;
 $$;
+
+-- send_expo_pushは内部のトリガーからのみ呼ばれるべきもので、
+-- クライアントから直接RPCとして呼び出せてしまうと任意の相手に
+-- 任意の内容の通知を送るのに悪用できるため、直接実行する権限を剥奪する
+revoke execute on function public.send_expo_push(text, text, text) from public, anon, authenticated;
+
+-- push_tokenはサークルメンバー間の表示名共有ポリシーに巻き込まれて
+-- 誰からでも読み取れてしまっていたため、列単位で読み取り権限を剥奪する
+-- (アプリ側もpush_tokenを読み取って使う箇所は無いため影響なし)
+revoke select (push_token) on public.profiles from anon, authenticated;
 
 -- リアクション/コメントがついたとき、ハイライトの持ち主にプッシュ通知を送る
 -- (自分の投稿への自分自身のリアクション/コメントは通知しない)

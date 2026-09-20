@@ -2,15 +2,18 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   Image,
   Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { addComment, deleteComment, getCommentsForHighlights, Comment } from '../lib/comments';
 import { Circle, getCircles } from '../lib/circles';
 import { getErrorMessage } from '../lib/errors';
 import {
@@ -22,6 +25,8 @@ import {
 } from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { supabase } from '../lib/supabase';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const VISIBILITY_OPTIONS: { value: Visibility; label: string }[] = [
   { value: 'private', label: 'プライベート' },
@@ -43,6 +48,8 @@ export default function HistoryScreen() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [photosByHighlight, setPhotosByHighlight] = useState<Record<string, string[]>>({});
   const [loadingPhotosId, setLoadingPhotosId] = useState<string | null>(null);
+  const [commentsByHighlight, setCommentsByHighlight] = useState<Record<string, Comment[]>>({});
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [circles, setCircles] = useState<Circle[]>([]);
   const [editingHighlight, setEditingHighlight] = useState<Highlight | null>(null);
@@ -50,6 +57,7 @@ export default function HistoryScreen() {
   const [editCircleIds, setEditCircleIds] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -84,6 +92,45 @@ export default function HistoryScreen() {
       } finally {
         setLoadingPhotosId(null);
       }
+    }
+    if (!commentsByHighlight[highlight.id]) {
+      try {
+        const grouped = await getCommentsForHighlights([highlight.id]);
+        setCommentsByHighlight((prev) => ({ ...prev, [highlight.id]: grouped[highlight.id] ?? [] }));
+      } catch (e) {
+        setError(getErrorMessage(e, 'コメントの取得に失敗しました'));
+      }
+    }
+  };
+
+  const handleSubmitComment = async (highlightId: string) => {
+    const body = (commentDrafts[highlightId] ?? '').trim();
+    if (!body) return;
+
+    setCommentDrafts((prev) => ({ ...prev, [highlightId]: '' }));
+    try {
+      const comment = await addComment(highlightId, body);
+      setCommentsByHighlight((prev) => ({
+        ...prev,
+        [highlightId]: [...(prev[highlightId] ?? []), comment],
+      }));
+    } catch (e) {
+      setCommentDrafts((prev) => ({ ...prev, [highlightId]: body }));
+      setError(getErrorMessage(e, 'コメントの投稿に失敗しました'));
+    }
+  };
+
+  const handleDeleteComment = async (highlightId: string, commentId: string) => {
+    const prev = commentsByHighlight[highlightId] ?? [];
+    setCommentsByHighlight((p) => ({
+      ...p,
+      [highlightId]: prev.filter((c) => c.id !== commentId),
+    }));
+    try {
+      await deleteComment(commentId);
+    } catch (e) {
+      setCommentsByHighlight((p) => ({ ...p, [highlightId]: prev }));
+      setError(getErrorMessage(e, 'コメントの削除に失敗しました'));
     }
   };
 
@@ -181,20 +228,19 @@ export default function HistoryScreen() {
       {highlights.map((highlight) => {
         const expanded = expandedId === highlight.id;
         return (
-          <TouchableOpacity
-            key={highlight.id}
-            style={styles.card}
-            onPress={() => toggleExpand(highlight)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.cardHeader}>
+          <View key={highlight.id} style={styles.card}>
+            <TouchableOpacity
+              style={styles.cardHeader}
+              onPress={() => toggleExpand(highlight)}
+              activeOpacity={0.7}
+            >
               <Text style={styles.date}>
                 {new Date(highlight.createdAt).toLocaleDateString('ja-JP')}
               </Text>
               <Text style={styles.detail}>
                 {highlight.photoCount}枚 ・ {VISIBILITY_LABEL[highlight.visibility]}
               </Text>
-            </View>
+            </TouchableOpacity>
 
             {expanded && (
               <View style={styles.photoArea}>
@@ -205,7 +251,13 @@ export default function HistoryScreen() {
                   )}
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   {(photosByHighlight[highlight.id] ?? []).map((url, i) => (
-                    <Image key={i} source={{ uri: url }} style={styles.photoThumb} />
+                    <TouchableOpacity
+                      key={i}
+                      onPress={() => setViewer({ urls: photosByHighlight[highlight.id], index: i })}
+                      activeOpacity={0.85}
+                    >
+                      <Image source={{ uri: url }} style={styles.photoThumb} />
+                    </TouchableOpacity>
                   ))}
                 </ScrollView>
 
@@ -225,9 +277,37 @@ export default function HistoryScreen() {
                     )}
                   </TouchableOpacity>
                 </View>
+
+                <View style={styles.commentSection}>
+                  {(commentsByHighlight[highlight.id] ?? []).map((comment) => (
+                    <View key={comment.id} style={styles.commentRow}>
+                      <Text style={styles.commentAuthor}>{comment.authorName}</Text>
+                      <Text style={styles.commentBody}>{comment.body}</Text>
+                      {comment.isMine && (
+                        <TouchableOpacity onPress={() => handleDeleteComment(highlight.id, comment.id)}>
+                          <Text style={styles.commentDelete}>削除</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ))}
+                  <View style={styles.commentInputRow}>
+                    <TextInput
+                      style={styles.commentInput}
+                      placeholder="コメントを追加..."
+                      value={commentDrafts[highlight.id] ?? ''}
+                      onChangeText={(text) =>
+                        setCommentDrafts((prev) => ({ ...prev, [highlight.id]: text }))
+                      }
+                      onSubmitEditing={() => handleSubmitComment(highlight.id)}
+                    />
+                    <TouchableOpacity onPress={() => handleSubmitComment(highlight.id)}>
+                      <Text style={styles.commentSend}>送信</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
               </View>
             )}
-          </TouchableOpacity>
+          </View>
         );
       })}
 
@@ -292,6 +372,32 @@ export default function HistoryScreen() {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!viewer} transparent animationType="fade">
+        <View style={styles.viewerOverlay}>
+          <TouchableOpacity
+            style={styles.viewerClose}
+            onPress={() => setViewer(null)}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <Text style={styles.viewerCloseText}>✕</Text>
+          </TouchableOpacity>
+          {viewer && (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              contentOffset={{ x: viewer.index * SCREEN_WIDTH, y: 0 }}
+            >
+              {viewer.urls.map((url, i) => (
+                <View key={i} style={styles.viewerPage}>
+                  <Image source={{ uri: url }} style={styles.viewerImage} resizeMode="contain" />
+                </View>
+              ))}
+            </ScrollView>
+          )}
         </View>
       </Modal>
     </ScrollView>
@@ -386,6 +492,50 @@ const styles = StyleSheet.create({
     color: '#333',
     fontWeight: '600',
   },
+  commentSection: {
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f2f2f2',
+    paddingTop: 10,
+  },
+  commentRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 6,
+  },
+  commentAuthor: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  commentBody: {
+    fontSize: 12,
+    color: '#444',
+    flex: 1,
+  },
+  commentDelete: {
+    fontSize: 11,
+    color: '#e74c3c',
+  },
+  commentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 10,
+  },
+  commentInput: {
+    flex: 1,
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  commentSend: {
+    fontSize: 13,
+    color: '#333',
+    fontWeight: '600',
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -464,5 +614,35 @@ const styles = StyleSheet.create({
     color: '#333',
     fontSize: 14,
     fontWeight: '600',
+  },
+  viewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+  },
+  viewerClose: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    zIndex: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerCloseText: {
+    color: '#fff',
+    fontSize: 18,
+  },
+  viewerPage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.8,
   },
 });

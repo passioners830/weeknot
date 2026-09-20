@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import type { Session } from '@supabase/supabase-js';
 import AuthScreen from './components/AuthScreen';
 import FeedScreen from './components/FeedScreen';
@@ -18,7 +19,7 @@ import ShareScreen from './components/ShareScreen';
 import SwipeScreen from './components/SwipeScreen';
 import { getCurrentSession, signOut, subscribeToAuthChanges } from './lib/auth';
 import { getErrorMessage } from './lib/errors';
-import { ensureWeeklyReminderScheduled, registerPushToken } from './lib/notifications';
+import { ensureWeeklyReminderScheduled, registerPushToken, sendTestReminderNow } from './lib/notifications';
 import { getMyDisplayName, updateDisplayName } from './lib/profile';
 import { isSupabaseConfigured } from './lib/supabase';
 import type { Photo } from './types';
@@ -26,6 +27,14 @@ import type { Photo } from './types';
 type Tab = 'organize' | 'feed' | 'history';
 
 export default function App() {
+  return (
+    <GestureHandlerRootView style={styles.container}>
+      <AppInner />
+    </GestureHandlerRootView>
+  );
+}
+
+function AppInner() {
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [kept, setKept] = useState<Photo[] | null>(null);
@@ -121,6 +130,9 @@ export default function App() {
       <View style={styles.header}>
         <TouchableOpacity onPress={openProfileModal}>
           <Text style={styles.headerEmail}>{session.user.email} ・ プロフィール編集</Text>
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => sendTestReminderNow()}>
+          <Text style={styles.headerEmail}>テスト通知</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => signOut()}>
           <Text style={styles.logout}>ログアウト</Text>
