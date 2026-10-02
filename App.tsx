@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -11,12 +13,16 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import type { Session } from '@supabase/supabase-js';
+import AdminScreen from './components/AdminScreen';
 import AuthScreen from './components/AuthScreen';
 import FeedScreen from './components/FeedScreen';
 import HistoryScreen from './components/HistoryScreen';
 import SelectPhotosScreen from './components/SelectPhotosScreen';
 import ShareScreen from './components/ShareScreen';
 import SwipeScreen from './components/SwipeScreen';
+import { deleteMyAccount } from './lib/account';
+import { initializeAds } from './lib/ads';
+import { amIAppAdmin } from './lib/admin';
 import { getCurrentSession, signOut, subscribeToAuthChanges } from './lib/auth';
 import { getErrorMessage } from './lib/errors';
 import { ensureWeeklyReminderScheduled, registerPushToken, sendTestReminderNow } from './lib/notifications';
@@ -24,7 +30,7 @@ import { getMyDisplayName, updateDisplayName } from './lib/profile';
 import { isSupabaseConfigured } from './lib/supabase';
 import type { Photo } from './types';
 
-type Tab = 'organize' | 'feed' | 'history';
+type Tab = 'organize' | 'feed' | 'history' | 'admin';
 
 export default function App() {
   return (
@@ -44,6 +50,8 @@ function AppInner() {
   const [displayNameDraft, setDisplayNameDraft] = useState('');
   const [profileError, setProfileError] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
 
   const handleSwipeDone = (keptPhotos: Photo[]) => {
     setKept(keptPhotos);
@@ -77,6 +85,32 @@ function AppInner() {
     setPhotosToPublish(null);
   };
 
+  const runDeleteAccount = async () => {
+    setDeletingAccount(true);
+    setProfileError(null);
+    try {
+      await deleteMyAccount();
+      setProfileModalVisible(false);
+    } catch (e) {
+      setProfileError(getErrorMessage(e, 'アカウントの削除に失敗しました'));
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
+  const handleDeleteAccount = () => {
+    const message =
+      '投稿・写真・コメント・サークルなど、すべてのデータが完全に削除され、元に戻せません。';
+    if (Platform.OS === 'web') {
+      if (window.confirm(`アカウントを削除しますか？\n${message}`)) runDeleteAccount();
+      return;
+    }
+    Alert.alert('アカウントを削除しますか？', message, [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: '削除する', style: 'destructive', onPress: runDeleteAccount },
+    ]);
+  };
+
   useEffect(() => {
     if (!isSupabaseConfigured) {
       setCheckingSession(false);
@@ -89,9 +123,14 @@ function AppInner() {
   }, []);
 
   useEffect(() => {
+    initializeAds().catch((e) => console.warn('広告SDKの初期化に失敗しました', e));
+  }, []);
+
+  useEffect(() => {
     if (!session) return;
     ensureWeeklyReminderScheduled().catch((e) => console.warn('週次リマインダーの予約に失敗しました', e));
     registerPushToken().catch((e) => console.warn('プッシュトークンの登録に失敗しました', e));
+    amIAppAdmin().then(setIsAdmin);
   }, [session]);
 
   if (!isSupabaseConfigured) {
@@ -159,6 +198,15 @@ function AppInner() {
                 <Text style={styles.modalSave}>{savingProfile ? '保存中...' : '保存'}</Text>
               </TouchableOpacity>
             </View>
+            <TouchableOpacity
+              style={styles.deleteAccountButton}
+              onPress={handleDeleteAccount}
+              disabled={deletingAccount}
+            >
+              <Text style={styles.deleteAccountText}>
+                {deletingAccount ? '削除中...' : 'アカウントを削除'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -172,11 +220,18 @@ function AppInner() {
         <TouchableOpacity onPress={() => setTab('history')} style={styles.tabButton}>
           <Text style={[styles.tabLabel, tab === 'history' && styles.tabLabelActive]}>履歴</Text>
         </TouchableOpacity>
+        {isAdmin && (
+          <TouchableOpacity onPress={() => setTab('admin')} style={styles.tabButton}>
+            <Text style={[styles.tabLabel, tab === 'admin' && styles.tabLabelActive]}>管理</Text>
+          </TouchableOpacity>
+        )}
       </View>
       {tab === 'feed' ? (
         <FeedScreen />
       ) : tab === 'history' ? (
         <HistoryScreen />
+      ) : tab === 'admin' ? (
+        <AdminScreen />
       ) : kept === null ? (
         <SwipeScreen onDone={handleSwipeDone} />
       ) : photosToPublish === null ? (
@@ -288,6 +343,18 @@ const styles = StyleSheet.create({
   modalSave: {
     color: '#333',
     fontSize: 14,
+    fontWeight: '600',
+  },
+  deleteAccountButton: {
+    alignItems: 'center',
+    marginTop: 20,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f2f2f2',
+  },
+  deleteAccountText: {
+    color: '#e74c3c',
+    fontSize: 13,
     fontWeight: '600',
   },
 });

@@ -28,7 +28,7 @@ beforeEach(() => {
 });
 
 describe('getFeed', () => {
-  it('resolves author names and marks own posts as isMine', async () => {
+  it('resolves author names, marks own posts as isMine, and excludes blocked authors', async () => {
     mockGetUser.mockResolvedValue(makeUser('me'));
     mockFrom
       .mockReturnValueOnce(
@@ -36,17 +36,19 @@ describe('getFeed', () => {
           data: [
             { id: 'h1', created_at: '2026-01-05', photo_count: 3, visibility: 'public', user_id: 'me' },
             { id: 'h2', created_at: '2026-01-04', photo_count: 2, visibility: 'circle', user_id: 'other' },
+            { id: 'h3', created_at: '2026-01-03', photo_count: 1, visibility: 'public', user_id: 'blocked' },
           ],
           error: null,
         })
       )
+      .mockReturnValueOnce(makeQueryBuilder({ data: [{ blocked_id: 'blocked' }], error: null }))
       .mockReturnValueOnce(
         makeQueryBuilder({ data: [{ id: 'other', display_name: 'さゆり' }], error: null })
       );
 
     const feed = await getFeed();
 
-    expect(feed).toEqual([
+    expect(feed.items).toEqual([
       {
         id: 'h1',
         createdAt: '2026-01-05',
@@ -68,14 +70,31 @@ describe('getFeed', () => {
     ]);
   });
 
-  it('returns an empty array without a profile lookup when there are no highlights', async () => {
+  it('returns an empty page without a block/profile lookup when there are no highlights', async () => {
     mockGetUser.mockResolvedValue(makeUser('me'));
     mockFrom.mockReturnValueOnce(makeQueryBuilder({ data: [], error: null }));
 
     const feed = await getFeed();
 
-    expect(feed).toEqual([]);
+    expect(feed).toEqual({ items: [], nextCursor: null });
     expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns a nextCursor when a full page comes back, and null otherwise', async () => {
+    mockGetUser.mockResolvedValue(makeUser('me'));
+    mockFrom
+      .mockReturnValueOnce(
+        makeQueryBuilder({
+          data: [{ id: 'h1', created_at: '2026-01-05', photo_count: 3, visibility: 'public', user_id: 'me' }],
+          error: null,
+        })
+      )
+      .mockReturnValueOnce(makeQueryBuilder({ data: [], error: null }))
+      .mockReturnValueOnce(makeQueryBuilder({ data: [], error: null }));
+
+    const feed = await getFeed({ limit: 1 });
+
+    expect(feed.nextCursor).toBe('2026-01-05');
   });
 });
 
@@ -98,7 +117,7 @@ describe('getHighlights', () => {
 
     const highlights = await getHighlights();
 
-    expect(highlights).toEqual([
+    expect(highlights.items).toEqual([
       {
         id: 'h1',
         createdAt: '2026-01-01',
@@ -107,6 +126,7 @@ describe('getHighlights', () => {
         circleIds: ['circ1', 'circ2'],
       },
     ]);
+    expect(highlights.nextCursor).toBeNull();
   });
 });
 

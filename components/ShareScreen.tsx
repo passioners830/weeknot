@@ -2,8 +2,10 @@ import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,14 +17,18 @@ import {
   addCircle,
   Circle,
   CircleMember,
+  deleteCircle,
   getCircleMembers,
   getCircles,
   joinCircleByCode,
   leaveCircle,
+  regenerateInviteCode,
+  removeMember,
 } from '../lib/circles';
 import { getErrorMessage } from '../lib/errors';
 import { getHighlights, Highlight, publishHighlight, Visibility } from '../lib/highlights';
 import { uploadHighlightPhotos } from '../lib/photos';
+import { supabase } from '../lib/supabase';
 import type { Photo } from '../types';
 
 type Props = {
@@ -57,10 +63,14 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
   const [membersLoading, setMembersLoading] = useState(false);
   const [membersError, setMembersError] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
 
   useEffect(() => {
     getCircles().then(setCircles);
-    getHighlights().then(setHistory);
+    getHighlights().then((page) => setHistory(page.items));
+    supabase.auth.getUser().then(({ data }) => setMyUserId(data.user?.id ?? null));
   }, []);
 
   const toggleCircle = (id: string) => {
@@ -144,6 +154,66 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
     } finally {
       setLeaving(false);
     }
+  };
+
+  const handleRegenerateCode = async () => {
+    if (!membersModalCircle) return;
+    setRegenerating(true);
+    setMembersError(null);
+    try {
+      const newCode = await regenerateInviteCode(membersModalCircle.id);
+      setCircles((prev) =>
+        prev.map((c) => (c.id === membersModalCircle.id ? { ...c, inviteCode: newCode } : c))
+      );
+      setMembersModalCircle((prev) => (prev ? { ...prev, inviteCode: newCode } : prev));
+    } catch (e) {
+      setMembersError(getErrorMessage(e, '招待コードの再発行に失敗しました'));
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const handleRemoveMember = async (member: CircleMember) => {
+    if (!membersModalCircle) return;
+    setRemovingMemberId(member.id);
+    setMembersError(null);
+    try {
+      await removeMember(membersModalCircle.id, member.id);
+      setMembers((prev) => prev.filter((m) => m.id !== member.id));
+    } catch (e) {
+      setMembersError(getErrorMessage(e, 'メンバーの削除に失敗しました'));
+    } finally {
+      setRemovingMemberId(null);
+    }
+  };
+
+  const runDeleteCircle = async () => {
+    if (!membersModalCircle) return;
+    setLeaving(true);
+    setMembersError(null);
+    try {
+      await deleteCircle(membersModalCircle.id);
+      setCircles((prev) => prev.filter((c) => c.id !== membersModalCircle.id));
+      setSelectedCircleIds((prev) => prev.filter((id) => id !== membersModalCircle.id));
+      closeMembersModal();
+    } catch (e) {
+      setMembersError(getErrorMessage(e, '削除に失敗しました'));
+    } finally {
+      setLeaving(false);
+    }
+  };
+
+  const handleDeleteCircle = () => {
+    if (!membersModalCircle) return;
+    const message = 'このサークルを削除しますか？\nメンバー全員が退出し、元に戻せません。';
+    if (Platform.OS === 'web') {
+      if (window.confirm(message)) runDeleteCircle();
+      return;
+    }
+    Alert.alert('このサークルを削除しますか？', 'メンバー全員が退出し、元に戻せません。', [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: '削除する', style: 'destructive', onPress: runDeleteCircle },
+    ]);
   };
 
   const canPublish = visibility !== 'circle' || selectedCircleIds.length > 0;
@@ -345,19 +415,48 @@ export default function ShareScreen({ keptPhotos, onReset }: Props) {
             <Text style={styles.modalTitle}>{membersModalCircle?.name} のメンバー</Text>
             {membersLoading && <ActivityIndicator />}
             {membersError && <Text style={styles.error}>{membersError}</Text>}
+
+            {!membersLoading && membersModalCircle?.ownerId === myUserId && (
+              <View style={styles.regenerateRow}>
+                <Text style={styles.inviteCode}>{membersModalCircle?.inviteCode}</Text>
+                <TouchableOpacity onPress={handleRegenerateCode} disabled={regenerating}>
+                  <Text style={styles.regenerateText}>
+                    {regenerating ? '再発行中...' : '招待コードを再発行'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {!membersLoading &&
               members.map((member) => (
-                <Text key={member.id} style={styles.memberRow}>
-                  {member.displayName}
-                </Text>
+                <View key={member.id} style={styles.memberListRow}>
+                  <Text style={styles.memberRow}>{member.displayName}</Text>
+                  {membersModalCircle?.ownerId === myUserId && member.id !== myUserId && (
+                    <TouchableOpacity
+                      onPress={() => handleRemoveMember(member)}
+                      disabled={removingMemberId === member.id}
+                    >
+                      <Text style={styles.memberRemove}>
+                        {removingMemberId === member.id ? '削除中...' : '削除'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               ))}
+
             <View style={styles.modalActions}>
               <TouchableOpacity onPress={closeMembersModal}>
                 <Text style={styles.modalCancel}>閉じる</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={handleLeaveCircle} disabled={leaving}>
-                <Text style={styles.leaveText}>{leaving ? '退出中...' : 'このサークルを退出'}</Text>
-              </TouchableOpacity>
+              {membersModalCircle?.ownerId === myUserId ? (
+                <TouchableOpacity onPress={handleDeleteCircle} disabled={leaving}>
+                  <Text style={styles.leaveText}>{leaving ? '削除中...' : 'サークルを削除'}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity onPress={handleLeaveCircle} disabled={leaving}>
+                  <Text style={styles.leaveText}>{leaving ? '退出中...' : 'このサークルを退出'}</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </View>
@@ -535,10 +634,34 @@ const styles = StyleSheet.create({
     color: '#666',
     textDecorationLine: 'underline',
   },
+  regenerateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingBottom: 10,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f2f2f2',
+  },
+  regenerateText: {
+    fontSize: 12,
+    color: '#333',
+    fontWeight: '600',
+  },
+  memberListRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   memberRow: {
     fontSize: 14,
     color: '#333',
     paddingVertical: 4,
+  },
+  memberRemove: {
+    fontSize: 12,
+    color: '#e74c3c',
   },
   leaveText: {
     color: '#e74c3c',

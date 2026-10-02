@@ -15,11 +15,16 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AdBanner from './AdBanner';
+import { blockUser } from '../lib/blocks';
 import { addComment, deleteComment, getCommentsForHighlights, Comment } from '../lib/comments';
 import { getErrorMessage } from '../lib/errors';
 import { deleteHighlight, getFeed, FeedItem } from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { getReactionsForHighlights, toggleReaction, ReactionSummary } from '../lib/reactions';
+import { reportHighlight } from '../lib/reports';
+
+const PAGE_SIZE = 20;
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -41,19 +46,29 @@ export default function FeedScreen() {
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [actionSheetItem, setActionSheetItem] = useState<FeedItem | null>(null);
+  const [reportModalItem, setReportModalItem] = useState<FeedItem | null>(null);
+  const [reportReason, setReportReason] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+
+  const loadReactionsAndComments = async (highlightIds: string[]) => {
+    const [summaries, commentMap] = await Promise.all([
+      getReactionsForHighlights(highlightIds),
+      getCommentsForHighlights(highlightIds),
+    ]);
+    setReactions((prev) => ({ ...prev, ...summaries }));
+    setComments((prev) => ({ ...prev, ...commentMap }));
+  };
 
   const load = useCallback(async () => {
     try {
       setError(null);
-      const feed = await getFeed();
-      setItems(feed);
-      const highlightIds = feed.map((f) => f.id);
-      const [summaries, commentMap] = await Promise.all([
-        getReactionsForHighlights(highlightIds),
-        getCommentsForHighlights(highlightIds),
-      ]);
-      setReactions(summaries);
-      setComments(commentMap);
+      const page = await getFeed({ limit: PAGE_SIZE });
+      setItems(page.items);
+      setNextCursor(page.nextCursor);
+      await loadReactionsAndComments(page.items.map((f) => f.id));
     } catch (e) {
       setError(getErrorMessage(e, 'フィードの取得に失敗しました'));
     }
@@ -67,6 +82,21 @@ export default function FeedScreen() {
     setRefreshing(true);
     await load();
     setRefreshing(false);
+  };
+
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await getFeed({ cursor: nextCursor, limit: PAGE_SIZE });
+      setItems((prev) => [...prev, ...page.items]);
+      setNextCursor(page.nextCursor);
+      await loadReactionsAndComments(page.items.map((f) => f.id));
+    } catch (e) {
+      setError(getErrorMessage(e, '追加のフィードの取得に失敗しました'));
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const handleReact = async (highlightId: string, emoji: string) => {
@@ -156,6 +186,55 @@ export default function FeedScreen() {
     );
   };
 
+  const openActionSheet = (item: FeedItem) => setActionSheetItem(item);
+  const closeActionSheet = () => setActionSheetItem(null);
+
+  const openReportModal = (item: FeedItem) => {
+    setActionSheetItem(null);
+    setReportModalItem(item);
+    setReportReason('');
+  };
+
+  const closeReportModal = () => {
+    setReportModalItem(null);
+    setReportReason('');
+  };
+
+  const handleSubmitReport = async () => {
+    if (!reportModalItem || !reportReason.trim()) return;
+    setReportSubmitting(true);
+    try {
+      await reportHighlight(reportModalItem.id, reportReason.trim());
+      closeReportModal();
+    } catch (e) {
+      setError(getErrorMessage(e, '通報に失敗しました'));
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+
+  const runBlock = async (item: FeedItem) => {
+    setActionSheetItem(null);
+    try {
+      await blockUser(item.authorId);
+      setItems((prev) => prev.filter((i) => i.authorId !== item.authorId));
+    } catch (e) {
+      setError(getErrorMessage(e, 'ブロックに失敗しました'));
+    }
+  };
+
+  const handleBlock = (item: FeedItem) => {
+    const message = `${item.authorName}さんをブロックしますか？\n今後、この人の投稿がフィードに表示されなくなります。`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(message)) runBlock(item);
+      return;
+    }
+    Alert.alert(`${item.authorName}さんをブロックしますか？`, '今後、この人の投稿がフィードに表示されなくなります。', [
+      { text: 'キャンセル', style: 'cancel' },
+      { text: 'ブロックする', style: 'destructive', onPress: () => runBlock(item) },
+    ]);
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -171,6 +250,8 @@ export default function FeedScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.container}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <>
             <Text style={styles.title}>フィード</Text>
@@ -180,6 +261,7 @@ export default function FeedScreen() {
             )}
           </>
         }
+        ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footerLoading} /> : null}
         renderItem={({ item }) => (
           <FeedCard
             item={item}
@@ -193,9 +275,11 @@ export default function FeedScreen() {
             onDeleteComment={(commentId) => handleDeleteComment(item.id, commentId)}
             onDelete={() => handleDelete(item.id)}
             onOpenPhoto={(urls, index) => setViewer({ urls, index })}
+            onOpenActions={() => openActionSheet(item)}
           />
         )}
       />
+      <AdBanner />
 
       <Modal visible={!!viewer} transparent animationType="fade">
         <View style={styles.viewerOverlay}>
@@ -222,6 +306,57 @@ export default function FeedScreen() {
           )}
         </View>
       </Modal>
+
+      <Modal visible={!!actionSheetItem} transparent animationType="fade">
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={closeActionSheet}>
+          <View style={styles.actionSheet}>
+            <TouchableOpacity
+              style={styles.actionSheetRow}
+              onPress={() => actionSheetItem && openReportModal(actionSheetItem)}
+            >
+              <Text style={styles.actionSheetText}>この投稿を通報</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.actionSheetRow}
+              onPress={() => actionSheetItem && handleBlock(actionSheetItem)}
+            >
+              <Text style={styles.actionSheetTextDanger}>
+                {actionSheetItem?.authorName}さんをブロック
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.actionSheetRow} onPress={closeActionSheet}>
+              <Text style={styles.actionSheetText}>キャンセル</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={!!reportModalItem} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>投稿を通報</Text>
+            <TextInput
+              style={styles.reportInput}
+              placeholder="通報の理由を入力してください"
+              value={reportReason}
+              onChangeText={setReportReason}
+              multiline
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={closeReportModal}>
+                <Text style={styles.modalCancel}>キャンセル</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSubmitReport}
+                disabled={reportSubmitting || !reportReason.trim()}
+              >
+                <Text style={styles.modalSubmit}>{reportSubmitting ? '送信中...' : '通報する'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -238,6 +373,7 @@ type FeedCardProps = {
   onDeleteComment: (commentId: string) => void;
   onDelete: () => void;
   onOpenPhoto: (urls: string[], index: number) => void;
+  onOpenActions: () => void;
 };
 
 // 写真は各カードが画面内に表示された（マウントされた）時だけ読み込む。
@@ -254,6 +390,7 @@ function FeedCard({
   onDeleteComment,
   onDelete,
   onOpenPhoto,
+  onOpenActions,
 }: FeedCardProps) {
   const [photoUrls, setPhotoUrls] = useState<string[]>([]);
 
@@ -277,13 +414,17 @@ function FeedCard({
         <Text style={styles.author}>{item.isMine ? '自分' : item.authorName}</Text>
         <View style={styles.cardHeaderRight}>
           <Text style={styles.date}>{new Date(item.createdAt).toLocaleDateString('ja-JP')}</Text>
-          {item.isMine && (
+          {item.isMine ? (
             <TouchableOpacity onPress={onDelete} disabled={deleting}>
               {deleting ? (
                 <ActivityIndicator size="small" color="#e74c3c" />
               ) : (
                 <Text style={styles.deleteLink}>削除</Text>
               )}
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={onOpenActions} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.moreButton}>⋯</Text>
             </TouchableOpacity>
           )}
         </View>
@@ -408,6 +549,79 @@ const styles = StyleSheet.create({
   deleteLink: {
     fontSize: 12,
     color: '#e74c3c',
+    fontWeight: '600',
+  },
+  moreButton: {
+    fontSize: 18,
+    color: '#999',
+    fontWeight: '700',
+    paddingHorizontal: 4,
+  },
+  footerLoading: {
+    marginVertical: 16,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionSheet: {
+    width: '80%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  actionSheetRow: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f2f2f2',
+  },
+  actionSheetText: {
+    fontSize: 15,
+    color: '#333',
+    textAlign: 'center',
+  },
+  actionSheetTextDanger: {
+    fontSize: 15,
+    color: '#e74c3c',
+    textAlign: 'center',
+  },
+  modalCard: {
+    width: '85%',
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 14,
+  },
+  reportInput: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 20,
+    marginTop: 16,
+  },
+  modalCancel: {
+    color: '#888',
+    fontSize: 14,
+  },
+  modalSubmit: {
+    color: '#333',
+    fontSize: 14,
     fontWeight: '600',
   },
   detail: {

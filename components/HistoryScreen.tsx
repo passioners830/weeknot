@@ -40,6 +40,8 @@ const VISIBILITY_LABEL: Record<Visibility, string> = {
   public: '全体公開',
 };
 
+const PAGE_SIZE = 20;
+
 export default function HistoryScreen() {
   const [userId, setUserId] = useState<string | null>(null);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
@@ -58,6 +60,8 @@ export default function HistoryScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -66,7 +70,9 @@ export default function HistoryScreen() {
           data: { user },
         } = await supabase.auth.getUser();
         setUserId(user?.id ?? null);
-        setHighlights(await getHighlights());
+        const page = await getHighlights({ limit: PAGE_SIZE });
+        setHighlights(page.items);
+        setNextCursor(page.nextCursor);
         setCircles(await getCircles());
       } catch (e) {
         setError(getErrorMessage(e, '履歴の取得に失敗しました'));
@@ -75,6 +81,20 @@ export default function HistoryScreen() {
       }
     })();
   }, []);
+
+  const handleLoadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await getHighlights({ cursor: nextCursor, limit: PAGE_SIZE });
+      setHighlights((prev) => [...prev, ...page.items]);
+      setNextCursor(page.nextCursor);
+    } catch (e) {
+      setError(getErrorMessage(e, '追加の履歴の取得に失敗しました'));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const toggleExpand = async (highlight: Highlight) => {
     if (expandedId === highlight.id) {
@@ -311,6 +331,16 @@ export default function HistoryScreen() {
         );
       })}
 
+      {nextCursor && (
+        <TouchableOpacity style={styles.loadMoreButton} onPress={handleLoadMore} disabled={loadingMore}>
+          {loadingMore ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <Text style={styles.loadMoreText}>もっと見る</Text>
+          )}
+        </TouchableOpacity>
+      )}
+
       <Modal visible={!!editingHighlight} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
@@ -430,6 +460,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     marginTop: 40,
+  },
+  loadMoreButton: {
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  loadMoreText: {
+    fontSize: 14,
+    color: '#333',
+    fontWeight: '600',
   },
   card: {
     borderWidth: 1,

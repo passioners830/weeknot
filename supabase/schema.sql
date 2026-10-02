@@ -130,6 +130,25 @@ create policy "circle_members: insert self as owner" on public.circle_members
 create policy "circle_members: delete own" on public.circle_members
   for delete using (user_id = auth.uid());
 
+-- circle_members: サークルのオーナーは他のメンバーも退会させられる
+-- (delete ownと合わせて「自分の行 または オーナー」のどちらかの条件で削除可能になる)
+create policy "circle_members: delete by circle owner" on public.circle_members
+  for delete using (
+    exists (
+      select 1 from public.circles c
+      where c.id = circle_members.circle_id and c.owner_id = auth.uid()
+    )
+  );
+
+-- circles: オーナーは招待コードの再発行など、自分のサークルを更新できる
+create policy "circles: update own" on public.circles
+  for update using (owner_id = auth.uid());
+
+-- circles: オーナーは自分のサークルを削除できる
+-- (circle_members/highlight_circlesはon delete cascadeで一緒に削除される)
+create policy "circles: delete own" on public.circles
+  for delete using (owner_id = auth.uid());
+
 -- 招待コードでサークルに参加するRPC
 -- (invite_codeでサークルを検索する処理はcircles/circle_membersのRLSを
 --  緩めずに済むよう、security definerで行う)
@@ -377,3 +396,103 @@ create trigger on_reaction_notify
 create trigger on_comment_notify
   after insert on public.comments
   for each row execute function public.notify_on_reaction_or_comment();
+
+-- アプリ管理者フラグ（通報の通知先を判定するため。運用者が自分のprofilesの行に手動でtrueを立てる想定）
+alter table public.profiles add column if not exists is_app_admin boolean not null default false;
+
+-- ブロック（自分がブロックした相手の投稿をフィードから除外する）
+create table public.blocks (
+  blocker_id uuid not null references auth.users(id) on delete cascade,
+  blocked_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blocker_id, blocked_id)
+);
+
+alter table public.blocks enable row level security;
+
+create policy "blocks: select own" on public.blocks
+  for select using (blocker_id = auth.uid());
+
+create policy "blocks: insert own" on public.blocks
+  for insert with check (blocker_id = auth.uid());
+
+create policy "blocks: delete own" on public.blocks
+  for delete using (blocker_id = auth.uid());
+
+-- 通報
+create table public.reports (
+  id uuid primary key default gen_random_uuid(),
+  reporter_id uuid not null references auth.users(id) on delete cascade,
+  highlight_id uuid not null references public.highlights(id) on delete cascade,
+  reason text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.reports enable row level security;
+
+-- reports: 通報した本人、またはアプリ管理者だけが見える（他人の通報内容は見えない）
+create policy "reports: select own or admin" on public.reports
+  for select using (
+    reporter_id = auth.uid()
+    or exists (select 1 from public.profiles p where p.id = auth.uid() and p.is_app_admin)
+  );
+
+create policy "reports: insert own" on public.reports
+  for insert with check (reporter_id = auth.uid());
+
+-- 通報が来たらアプリ管理者（is_app_admin=trueの全員）にプッシュ通知を送る
+create or replace function public.notify_on_report()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  admin_row record;
+  reporter_name text;
+begin
+  select display_name into reporter_name from public.profiles where id = new.reporter_id;
+
+  for admin_row in
+    select push_token from public.profiles where is_app_admin and push_token is not null
+  loop
+    perform public.send_expo_push(
+      admin_row.push_token,
+      'しゅうまとめ',
+      coalesce(reporter_name, '誰か') || 'さんが投稿を通報しました: ' || new.reason
+    );
+  end loop;
+
+  return new;
+end;
+$$;
+
+create trigger on_report_notify
+  after insert on public.reports
+  for each row execute function public.notify_on_report();
+
+-- 呼び出し元がアプリ管理者かどうかを判定するヘルパー関数
+-- (profilesのSELECTポリシーがprofiles自身を参照すると無限再帰になるため、
+--  security definerで所有者権限として実行しRLSを再帰させずに判定する)
+create or replace function public.is_app_admin_user()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select coalesce((select is_app_admin from public.profiles where id = auth.uid()), false);
+$$;
+
+-- profiles: アプリ管理者は通報対応のため全員のプロフィールを見られる
+create policy "profiles: select if app admin" on public.profiles
+  for select using (public.is_app_admin_user());
+
+-- highlights: アプリ管理者は通報対応のため全ての投稿を見られる
+create policy "highlights: select if app admin" on public.highlights
+  for select using (public.is_app_admin_user());
+
+-- 実際のBAN状態はauth.users側（Admin APIでのみ操作可能）にあり、
+-- クライアントからは直接見えないため、UI表示用にprofiles側にも複製しておく
+-- （suspend-user Edge Functionがservice role権限でBAN/UNBANと同時に更新する）
+alter table public.profiles add column if not exists is_suspended boolean not null default false;

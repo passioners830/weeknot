@@ -3,6 +3,11 @@ const expoConfig = require('eslint-config-expo/flat');
 module.exports = [
   ...expoConfig,
   {
+    // Denoランタイム用のEdge Function（リモートURL importやDenoグローバルを使う）は
+    // このReact Nativeプロジェクトのlint/型チェック対象外
+    ignores: ['supabase/functions/**'],
+  },
+  {
     rules: {
       // Animated.ValueXY を useRef で保持し、interpolate/getTranslateTransform を
       // レンダー中に呼ぶのはReact Nativeの標準的なアニメーションパターンのため無効化

@@ -1,4 +1,8 @@
 {
+  "react-native-google-mobile-ads": {
+    "android_app_id": "ca-app-pub-7963050408481805~8590800798",
+    "ios_app_id": "ca-app-pub-7963050408481805~3250010052"
+  },
   "expo": {
     "name": "photo-app",
     "slug": "photo-app",
@@ -12,7 +16,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "9"
+      "buildNumber": "12"
     },
     "android": {
       "adaptiveIcon": {
@@ -50,6 +54,13 @@
         {
           "icon": "./assets/android-icon-foreground.png",
           "color": "#333333"
+        }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-7963050408481805~8590800798",
+          "iosAppId": "ca-app-pub-7963050408481805~3250010052"
         }
       ]
     ],

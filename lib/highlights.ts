@@ -1,3 +1,4 @@
+import { getBlockedUserIds } from './blocks';
 import { deleteHighlightPhotos } from './photos';
 import { supabase } from './supabase';
 
@@ -21,9 +22,18 @@ export type FeedItem = {
   isMine: boolean;
 };
 
-const FEED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export type Page<T> = { items: T[]; nextCursor: string | null };
 
-export async function getFeed(): Promise<FeedItem[]> {
+const FEED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_PAGE_SIZE = 20;
+
+// cursorは前ページ最後の要素のcreated_at。件数が積み重なっても常に「その時刻より前」を
+// 取得するだけなので、取得中に新しい投稿が増えても後続ページが重複・欠落しない
+export async function getFeed(options?: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<Page<FeedItem>> {
+  const limit = options?.limit ?? DEFAULT_PAGE_SIZE;
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -31,48 +41,72 @@ export async function getFeed(): Promise<FeedItem[]> {
   // フィードは直近1週間の投稿のみ（自分の投稿も含む）。
   // 自分の過去の投稿はHistoryScreen側で（遅延読み込みつきで）全件見られる。
   const cutoff = new Date(Date.now() - FEED_WINDOW_MS).toISOString();
-  const { data: highlights, error } = await supabase
+  let query = supabase
     .from('highlights')
     .select('id, created_at, photo_count, visibility, user_id')
     .gte('created_at', cutoff)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (options?.cursor) {
+    query = query.lt('created_at', options.cursor);
+  }
+  const { data: highlights, error } = await query;
   if (error) throw error;
-  if (!highlights || highlights.length === 0) return [];
+  if (!highlights || highlights.length === 0) return { items: [], nextCursor: null };
 
-  const userIds = [...new Set(highlights.map((h) => h.user_id))];
-  const { data: profiles, error: profilesError } = await supabase
-    .from('profiles')
-    .select('id, display_name')
-    .in('id', userIds);
+  const nextCursor = highlights.length === limit ? highlights[highlights.length - 1].created_at : null;
+
+  const blockedIds = new Set(await getBlockedUserIds());
+  const visible = highlights.filter((h) => !blockedIds.has(h.user_id));
+
+  const userIds = [...new Set(visible.map((h) => h.user_id))];
+  const { data: profiles, error: profilesError } =
+    userIds.length > 0
+      ? await supabase.from('profiles').select('id, display_name').in('id', userIds)
+      : { data: [] as { id: string; display_name: string | null }[], error: null };
   if (profilesError) throw profilesError;
 
   const nameById = new Map((profiles ?? []).map((p) => [p.id, p.display_name]));
 
-  return highlights.map((h) => ({
-    id: h.id,
-    createdAt: h.created_at,
-    photoCount: h.photo_count,
-    visibility: h.visibility as Visibility,
-    authorId: h.user_id,
-    authorName: nameById.get(h.user_id) ?? '不明なユーザー',
-    isMine: h.user_id === user?.id,
-  }));
+  return {
+    items: visible.map((h) => ({
+      id: h.id,
+      createdAt: h.created_at,
+      photoCount: h.photo_count,
+      visibility: h.visibility as Visibility,
+      authorId: h.user_id,
+      authorName: nameById.get(h.user_id) ?? '不明なユーザー',
+      isMine: h.user_id === user?.id,
+    })),
+    nextCursor,
+  };
 }
 
-export async function getHighlights(): Promise<Highlight[]> {
-  const { data, error } = await supabase
+export async function getHighlights(options?: {
+  cursor?: string | null;
+  limit?: number;
+}): Promise<Page<Highlight>> {
+  const limit = options?.limit ?? DEFAULT_PAGE_SIZE;
+  let query = supabase
     .from('highlights')
     .select('id, created_at, photo_count, visibility, highlight_circles(circle_id)')
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (options?.cursor) {
+    query = query.lt('created_at', options.cursor);
+  }
+  const { data, error } = await query;
   if (error) throw error;
 
-  return (data ?? []).map((h) => ({
+  const items = (data ?? []).map((h) => ({
     id: h.id,
     createdAt: h.created_at,
     photoCount: h.photo_count,
     visibility: h.visibility as Visibility,
     circleIds: (h.highlight_circles ?? []).map((hc) => hc.circle_id),
   }));
+
+  return { items, nextCursor: items.length === limit ? items[items.length - 1].createdAt : null };
 }
 
 export async function publishHighlight(params: {

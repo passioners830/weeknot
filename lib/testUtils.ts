@@ -11,6 +11,8 @@ export function makeQueryBuilder(result: { data: unknown; error: unknown }) {
   builder.in = jest.fn(chain);
   builder.order = jest.fn(chain);
   builder.gte = jest.fn(chain);
+  builder.lt = jest.fn(chain);
+  builder.limit = jest.fn(chain);
   builder.single = jest.fn(() => Promise.resolve(result));
   builder.then = (
     resolve: (value: typeof result) => unknown,
