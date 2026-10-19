@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,15 +16,17 @@ import {
 import { addComment, deleteComment, getCommentsForHighlights, Comment } from '../lib/comments';
 import { Circle, getCircles } from '../lib/circles';
 import { getErrorMessage } from '../lib/errors';
+import { WEEKDAY_LABELS, addMonths, dayKey, groupHighlightsByDay, monthRange } from '../lib/calendar';
 import {
   deleteHighlight,
-  getHighlights,
+  getHighlightsInRange,
   updateHighlightVisibility,
   Highlight,
   Visibility,
 } from '../lib/highlights';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { supabase } from '../lib/supabase';
+import MonthCalendar from './MonthCalendar';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -40,7 +42,11 @@ const VISIBILITY_LABEL: Record<Visibility, string> = {
   public: '全体公開',
 };
 
-const PAGE_SIZE = 20;
+function formatDayHeading(key: string): string {
+  const [year, month, day] = key.split('-').map(Number);
+  const weekday = WEEKDAY_LABELS[new Date(year, month - 1, day).getDay()];
+  return `${month}月${day}日（${weekday}）の投稿`;
+}
 
 export default function HistoryScreen() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -60,8 +66,13 @@ export default function HistoryScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const todayKey = dayKey(new Date());
+  const [viewMonth, setViewMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
+  const [selectedDay, setSelectedDay] = useState<string | null>(todayKey);
+  const [monthLoading, setMonthLoading] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -70,30 +81,47 @@ export default function HistoryScreen() {
           data: { user },
         } = await supabase.auth.getUser();
         setUserId(user?.id ?? null);
-        const page = await getHighlights({ limit: PAGE_SIZE });
-        setHighlights(page.items);
-        setNextCursor(page.nextCursor);
         setCircles(await getCircles());
       } catch (e) {
         setError(getErrorMessage(e, '履歴の取得に失敗しました'));
-      } finally {
-        setLoading(false);
       }
     })();
   }, []);
 
-  const handleLoadMore = async () => {
-    if (!nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    try {
-      const page = await getHighlights({ cursor: nextCursor, limit: PAGE_SIZE });
-      setHighlights((prev) => [...prev, ...page.items]);
-      setNextCursor(page.nextCursor);
-    } catch (e) {
-      setError(getErrorMessage(e, '追加の履歴の取得に失敗しました'));
-    } finally {
-      setLoadingMore(false);
-    }
+  useEffect(() => {
+    let cancelled = false;
+    setMonthLoading(true);
+    setError(null);
+    const { start, end } = monthRange(viewMonth.year, viewMonth.month);
+    getHighlightsInRange(start, end)
+      .then((items) => {
+        if (!cancelled) setHighlights(items);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(getErrorMessage(e, '履歴の取得に失敗しました'));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setMonthLoading(false);
+        setLoading(false);
+      });
+    // 月を素早く切り替えたとき、古い月の結果で新しい月の表示を上書きしない
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMonth]);
+
+  const highlightsByDay = useMemo(() => groupHighlightsByDay(highlights), [highlights]);
+  const markedDays = useMemo(
+    () => Object.fromEntries(Object.entries(highlightsByDay).map(([key, list]) => [key, list.length])),
+    [highlightsByDay]
+  );
+  const selectedHighlights = selectedDay ? (highlightsByDay[selectedDay] ?? []) : [];
+
+  const handleChangeMonth = (delta: -1 | 1) => {
+    setViewMonth((prev) => addMonths(prev.year, prev.month, delta));
+    setSelectedDay(null);
+    setExpandedId(null);
   };
 
   const toggleExpand = async (highlight: Highlight) => {
@@ -241,11 +269,31 @@ export default function HistoryScreen() {
 
       {error && <Text style={styles.error}>{error}</Text>}
 
-      {highlights.length === 0 && !error && (
-        <Text style={styles.empty}>まだ公開したハイライトがありません</Text>
+      <MonthCalendar
+        year={viewMonth.year}
+        month={viewMonth.month}
+        markedDays={markedDays}
+        selectedDay={selectedDay}
+        todayKey={todayKey}
+        loading={monthLoading}
+        onSelectDay={(key) => {
+          setSelectedDay(key);
+          setExpandedId(null);
+        }}
+        onChangeMonth={handleChangeMonth}
+      />
+
+      {selectedDay ? (
+        <Text style={styles.dayHeading}>{formatDayHeading(selectedDay)}</Text>
+      ) : (
+        <Text style={styles.empty}>日付をタップすると、その日の投稿が表示されます</Text>
       )}
 
-      {highlights.map((highlight) => {
+      {selectedDay && selectedHighlights.length === 0 && !monthLoading && !error && (
+        <Text style={styles.empty}>この日の投稿はありません</Text>
+      )}
+
+      {selectedHighlights.map((highlight) => {
         const expanded = expandedId === highlight.id;
         return (
           <View key={highlight.id} style={styles.card}>
@@ -255,7 +303,10 @@ export default function HistoryScreen() {
               activeOpacity={0.7}
             >
               <Text style={styles.date}>
-                {new Date(highlight.createdAt).toLocaleDateString('ja-JP')}
+                {new Date(highlight.createdAt).toLocaleTimeString('ja-JP', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
               </Text>
               <Text style={styles.detail}>
                 {highlight.photoCount}枚 ・ {VISIBILITY_LABEL[highlight.visibility]}
@@ -330,16 +381,6 @@ export default function HistoryScreen() {
           </View>
         );
       })}
-
-      {nextCursor && (
-        <TouchableOpacity style={styles.loadMoreButton} onPress={handleLoadMore} disabled={loadingMore}>
-          {loadingMore ? (
-            <ActivityIndicator size="small" />
-          ) : (
-            <Text style={styles.loadMoreText}>もっと見る</Text>
-          )}
-        </TouchableOpacity>
-      )}
 
       <Modal visible={!!editingHighlight} transparent animationType="fade">
         <View style={styles.modalOverlay}>
@@ -461,14 +502,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
   },
-  loadMoreButton: {
-    alignItems: 'center',
-    paddingVertical: 14,
-  },
-  loadMoreText: {
+  dayHeading: {
     fontSize: 14,
-    color: '#333',
     fontWeight: '600',
+    marginBottom: 10,
   },
   card: {
     borderWidth: 1,

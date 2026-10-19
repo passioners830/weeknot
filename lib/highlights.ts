@@ -82,14 +82,44 @@ export async function getFeed(options?: {
   };
 }
 
+type OwnHighlightRow = {
+  id: string;
+  created_at: string;
+  photo_count: number;
+  visibility: string;
+  highlight_circles: { circle_id: string }[] | null;
+};
+
+function toHighlight(h: OwnHighlightRow): Highlight {
+  return {
+    id: h.id,
+    createdAt: h.created_at,
+    photoCount: h.photo_count,
+    visibility: h.visibility as Visibility,
+    circleIds: (h.highlight_circles ?? []).map((hc) => hc.circle_id),
+  };
+}
+
+async function requireUserId(): Promise<string> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error('ログインしていません');
+  return user.id;
+}
+
+// 閲覧権限のポリシーは他人の公開・サークル投稿や（管理者なら）全投稿も読めるため、
+// 「自分の投稿」はuser_idで明示的に絞る
 export async function getHighlights(options?: {
   cursor?: string | null;
   limit?: number;
 }): Promise<Page<Highlight>> {
   const limit = options?.limit ?? DEFAULT_PAGE_SIZE;
+  const userId = await requireUserId();
   let query = supabase
     .from('highlights')
     .select('id, created_at, photo_count, visibility, highlight_circles(circle_id)')
+    .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (options?.cursor) {
@@ -98,15 +128,23 @@ export async function getHighlights(options?: {
   const { data, error } = await query;
   if (error) throw error;
 
-  const items = (data ?? []).map((h) => ({
-    id: h.id,
-    createdAt: h.created_at,
-    photoCount: h.photo_count,
-    visibility: h.visibility as Visibility,
-    circleIds: (h.highlight_circles ?? []).map((hc) => hc.circle_id),
-  }));
+  const items = (data ?? []).map(toHighlight);
 
   return { items, nextCursor: items.length === limit ? items[items.length - 1].createdAt : null };
+}
+
+// 自分の投稿のうち、start以上end未満に作られたもの（新しい順）
+export async function getHighlightsInRange(start: Date, end: Date): Promise<Highlight[]> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase
+    .from('highlights')
+    .select('id, created_at, photo_count, visibility, highlight_circles(circle_id)')
+    .eq('user_id', userId)
+    .gte('created_at', start.toISOString())
+    .lt('created_at', end.toISOString())
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(toHighlight);
 }
 
 export async function publishHighlight(params: {

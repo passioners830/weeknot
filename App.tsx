@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,12 +20,14 @@ import HistoryScreen from './components/HistoryScreen';
 import PhotoTabsScreen from './components/PhotoTabsScreen';
 import SelectPhotosScreen from './components/SelectPhotosScreen';
 import ShareScreen from './components/ShareScreen';
+import SwipeableTabs from './components/SwipeableTabs';
 import SwipeScreen from './components/SwipeScreen';
 import { deleteMyAccount } from './lib/account';
 import { initializeAds } from './lib/ads';
 import { amIAppAdmin } from './lib/admin';
 import { getCurrentSession, signOut, subscribeToAuthChanges } from './lib/auth';
 import { getErrorMessage } from './lib/errors';
+import { hasOrganizedThisWeek, markOrganizedNow } from './lib/organizeHistory';
 import { ensureWeeklyReminderScheduled, registerPushToken, sendTestReminderNow } from './lib/notifications';
 import { getMyDisplayName, updateDisplayName } from './lib/profile';
 import { isSupabaseConfigured } from './lib/supabase';
@@ -41,6 +43,9 @@ Sentry.init({
 });
 
 type Tab = 'organize' | 'sorted' | 'feed' | 'history' | 'admin';
+
+// タブバーの並びと同じ順。スワイプでの画面移動もこの順に隣へ動く
+const BASE_TAB_ORDER: Tab[] = ['organize', 'sorted', 'feed', 'history'];
 
 export default Sentry.wrap(function App() {
   return (
@@ -62,9 +67,11 @@ function AppInner() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
+  const [initialTabResolved, setInitialTabResolved] = useState(false);
 
   const handleSwipeDone = (keptPhotos: Photo[]) => {
     setKept(keptPhotos);
+    markOrganizedNow().catch((e) => console.warn('整理の完了を記録できませんでした', e));
   };
 
   const openProfileModal = async () => {
@@ -136,6 +143,21 @@ function AppInner() {
     initializeAds().catch((e) => console.warn('広告SDKの初期化に失敗しました', e));
   }, []);
 
+  // 今週すでに整理を終えていれば、起動時の最初の画面は整理ではなくフィードにする
+  useEffect(() => {
+    hasOrganizedThisWeek()
+      .then((organized) => {
+        if (organized) setTab('feed');
+      })
+      .catch((e) => console.warn('整理の完了状況を読み込めませんでした', e))
+      .finally(() => setInitialTabResolved(true));
+  }, []);
+
+  const tabOrder = useMemo<Tab[]>(
+    () => (isAdmin ? [...BASE_TAB_ORDER, 'admin'] : BASE_TAB_ORDER),
+    [isAdmin]
+  );
+
   useEffect(() => {
     if (!session) return;
     ensureWeeklyReminderScheduled().catch((e) => console.warn('週次リマインダーの予約に失敗しました', e));
@@ -155,7 +177,7 @@ function AppInner() {
     );
   }
 
-  if (checkingSession) {
+  if (checkingSession || !initialTabResolved) {
     return (
       <View style={styles.center}>
         <StatusBar style="auto" />
@@ -239,21 +261,24 @@ function AppInner() {
           </TouchableOpacity>
         )}
       </View>
-      {tab === 'sorted' ? (
-        <PhotoTabsScreen />
-      ) : tab === 'feed' ? (
-        <FeedScreen />
-      ) : tab === 'history' ? (
-        <HistoryScreen />
-      ) : tab === 'admin' ? (
-        <AdminScreen />
-      ) : kept === null ? (
-        <SwipeScreen onDone={handleSwipeDone} />
-      ) : photosToPublish === null ? (
-        <SelectPhotosScreen photos={kept} onConfirm={setPhotosToPublish} onBack={() => setKept(null)} />
-      ) : (
-        <ShareScreen keptPhotos={photosToPublish} onReset={handleReset} />
-      )}
+      {/* 整理タブではカードの左右スワイプが「残す/削除」に使われているため、画面移動のスワイプは無効 */}
+      <SwipeableTabs order={tabOrder} current={tab} onChange={setTab} enabled={tab !== 'organize'}>
+        {tab === 'sorted' ? (
+          <PhotoTabsScreen />
+        ) : tab === 'feed' ? (
+          <FeedScreen />
+        ) : tab === 'history' ? (
+          <HistoryScreen />
+        ) : tab === 'admin' ? (
+          <AdminScreen />
+        ) : kept === null ? (
+          <SwipeScreen onDone={handleSwipeDone} />
+        ) : photosToPublish === null ? (
+          <SelectPhotosScreen photos={kept} onConfirm={setPhotosToPublish} onBack={() => setKept(null)} />
+        ) : (
+          <ShareScreen keptPhotos={photosToPublish} onReset={handleReset} />
+        )}
+      </SwipeableTabs>
     </View>
   );
 }

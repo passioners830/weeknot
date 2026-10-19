@@ -12,6 +12,7 @@ import {
   deleteHighlight,
   getFeed,
   getHighlights,
+  getHighlightsInRange,
   publishHighlight,
   updateHighlightVisibility,
 } from '../highlights';
@@ -100,6 +101,7 @@ describe('getFeed', () => {
 
 describe('getHighlights', () => {
   it('flattens nested highlight_circles rows into circleIds', async () => {
+    mockGetUser.mockResolvedValue(makeUser('me'));
     mockFrom.mockReturnValueOnce(
       makeQueryBuilder({
         data: [
@@ -127,6 +129,66 @@ describe('getHighlights', () => {
       },
     ]);
     expect(highlights.nextCursor).toBeNull();
+  });
+
+  it("only queries the signed-in user's own highlights", async () => {
+    mockGetUser.mockResolvedValue(makeUser('me'));
+    const builder = makeQueryBuilder({ data: [], error: null });
+    mockFrom.mockReturnValueOnce(builder);
+
+    await getHighlights();
+
+    expect(builder.eq).toHaveBeenCalledWith('user_id', 'me');
+  });
+
+  it('throws when not signed in', async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null } });
+
+    await expect(getHighlights()).rejects.toThrow('ログインしていません');
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+});
+
+describe('getHighlightsInRange', () => {
+  it("queries the user's own highlights within [start, end) and maps the rows", async () => {
+    mockGetUser.mockResolvedValue(makeUser('me'));
+    const builder = makeQueryBuilder({
+      data: [
+        {
+          id: 'h1',
+          created_at: '2026-10-05T03:00:00Z',
+          photo_count: 4,
+          visibility: 'public',
+          highlight_circles: [],
+        },
+      ],
+      error: null,
+    });
+    mockFrom.mockReturnValueOnce(builder);
+    const start = new Date(2026, 9, 1);
+    const end = new Date(2026, 10, 1);
+
+    const highlights = await getHighlightsInRange(start, end);
+
+    expect(builder.eq).toHaveBeenCalledWith('user_id', 'me');
+    expect(builder.gte).toHaveBeenCalledWith('created_at', start.toISOString());
+    expect(builder.lt).toHaveBeenCalledWith('created_at', end.toISOString());
+    expect(highlights).toEqual([
+      {
+        id: 'h1',
+        createdAt: '2026-10-05T03:00:00Z',
+        photoCount: 4,
+        visibility: 'public',
+        circleIds: [],
+      },
+    ]);
+  });
+
+  it('throws when the query fails', async () => {
+    mockGetUser.mockResolvedValue(makeUser('me'));
+    mockFrom.mockReturnValueOnce(makeQueryBuilder({ data: null, error: new Error('query failed') }));
+
+    await expect(getHighlightsInRange(new Date(), new Date())).rejects.toThrow('query failed');
   });
 });
 
