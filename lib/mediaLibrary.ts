@@ -32,15 +32,16 @@ export async function getLibraryPhotoIds(limit = 90): Promise<string[]> {
   return result.assets.map((asset) => asset.id);
 }
 
-// 端末から削除された写真などidから解決できない場合はnullを返す
-export async function resolvePhotoUriById(assetId: string): Promise<string | null> {
+export async function resolvePhotoUriById(assetId: string): Promise<string> {
   if (Platform.OS === 'web') return `https://picsum.photos/id/${assetId}/300/400`;
+  // AndroidのアセットidはMediaStoreの行IDそのもの。getAssetInfoAsync(id)はAndroid実機で
+  // 取得できずnullになり写真が表示されなかったため、content URIを直接組み立てる
+  if (Platform.OS === 'android') return `content://media/external/images/media/${assetId}`;
   try {
     const info = await MediaLibrary.getAssetInfoAsync(assetId);
-    if (!info) return null;
-    return info.localUri ?? info.uri;
+    return info?.localUri ?? info?.uri ?? `ph://${assetId}`;
   } catch {
-    return null;
+    return `ph://${assetId}`;
   }
 }
 
