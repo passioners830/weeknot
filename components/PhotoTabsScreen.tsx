@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  BackHandler,
   Dimensions,
   FlatList,
   Modal,
@@ -28,16 +29,19 @@ import { getErrorMessage } from '../lib/errors';
 import AssetThumb from './AssetThumb';
 import PhotoPickerModal from './PhotoPickerModal';
 
-const COLUMNS = 3;
 const GAP = 6;
 const PADDING = 12;
-const THUMB_SIZE = (Dimensions.get('window').width - PADDING * 2 - GAP * (COLUMNS - 1)) / COLUMNS;
+const WINDOW_WIDTH = Dimensions.get('window').width;
+const PHOTO_COLUMNS = 3;
+const PHOTO_SIZE = (WINDOW_WIDTH - PADDING * 2 - GAP * (PHOTO_COLUMNS - 1)) / PHOTO_COLUMNS;
+const CARD_GAP = 12;
+const CARD_SIZE = (WINDOW_WIDTH - PADDING * 2 - CARD_GAP) / 2;
 
 type NameModalMode = 'create' | 'rename';
 
 export default function PhotoTabsScreen() {
   const [state, setState] = useState<PhotoTabsState | null>(null);
-  const [selectedTabId, setSelectedTabId] = useState<string | null>(null);
+  const [openTabId, setOpenTabId] = useState<string | null>(null);
   const [nameModalMode, setNameModalMode] = useState<NameModalMode | null>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [nameError, setNameError] = useState<string | null>(null);
@@ -48,14 +52,22 @@ export default function PhotoTabsScreen() {
   const refresh = useCallback(async () => {
     const next = await getPhotoTabsState();
     setState(next);
-    setSelectedTabId((current) =>
-      current && next.tabs.some((t) => t.id === current) ? current : (next.tabs[0]?.id ?? null)
-    );
+    setOpenTabId((current) => (current && next.tabs.some((t) => t.id === current) ? current : null));
   }, []);
 
   useEffect(() => {
     refresh().catch((e) => setScreenError(getErrorMessage(e, 'タブの読み込みに失敗しました')));
   }, [refresh]);
+
+  // 写真の画面でAndroidの戻るボタンを押したら、アプリを閉じずにタブ一覧へ戻る
+  useEffect(() => {
+    if (!openTabId) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setOpenTabId(null);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [openTabId]);
 
   const runAction = async (action: () => Promise<void>, fallbackMessage: string) => {
     setScreenError(null);
@@ -71,12 +83,12 @@ export default function PhotoTabsScreen() {
     return <View style={styles.container} />;
   }
 
-  const selectedTab = state.tabs.find((t) => t.id === selectedTabId) ?? null;
+  const openTab = state.tabs.find((t) => t.id === openTabId) ?? null;
   const counts = countPhotosByTab(state);
-  const photoIds = selectedTab ? getTabPhotoIds(state, selectedTab.id) : [];
+  const photoIds = openTab ? getTabPhotoIds(state, openTab.id) : [];
 
   const openNameModal = (mode: NameModalMode) => {
-    setNameDraft(mode === 'rename' && selectedTab ? selectedTab.name : '');
+    setNameDraft(mode === 'rename' && openTab ? openTab.name : '');
     setNameError(null);
     setNameModalMode(mode);
   };
@@ -84,11 +96,11 @@ export default function PhotoTabsScreen() {
   const handleSubmitName = async () => {
     setNameError(null);
     try {
-      if (nameModalMode === 'rename' && selectedTab) {
-        await renamePhotoTab(selectedTab.id, nameDraft);
+      if (nameModalMode === 'rename' && openTab) {
+        await renamePhotoTab(openTab.id, nameDraft);
       } else {
         const tab = await createPhotoTab(nameDraft);
-        setSelectedTabId(tab.id);
+        setOpenTabId(tab.id);
       }
       setNameModalMode(null);
       await refresh();
@@ -98,23 +110,23 @@ export default function PhotoTabsScreen() {
   };
 
   const handleDeleteTab = () => {
-    if (!selectedTab) return;
-    const run = () => runAction(() => deletePhotoTab(selectedTab.id), 'タブを削除できませんでした');
+    if (!openTab) return;
+    const run = () => runAction(() => deletePhotoTab(openTab.id), 'タブを削除できませんでした');
     const message = 'タブ内の写真はカメラロールにそのまま残ります。';
     if (Platform.OS === 'web') {
-      if (window.confirm(`「${selectedTab.name}」を削除しますか？\n${message}`)) run();
+      if (window.confirm(`「${openTab.name}」を削除しますか？\n${message}`)) run();
       return;
     }
-    Alert.alert(`「${selectedTab.name}」を削除しますか？`, message, [
+    Alert.alert(`「${openTab.name}」を削除しますか？`, message, [
       { text: 'キャンセル', style: 'cancel' },
       { text: '削除する', style: 'destructive', onPress: run },
     ]);
   };
 
   const handleAddPhotos = (assetIds: string[]) => {
-    if (!selectedTab) return;
+    if (!openTab) return;
     setPickerVisible(false);
-    runAction(() => assignPhotosToTab(assetIds, selectedTab.id), '写真を追加できませんでした');
+    runAction(() => assignPhotosToTab(assetIds, openTab.id), '写真を追加できませんでした');
   };
 
   const handleMovePhoto = (assetId: string, tabId: string) => {
@@ -129,42 +141,60 @@ export default function PhotoTabsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.chipBar}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
-          {state.tabs.map((tab) => (
-            <TouchableOpacity
-              key={tab.id}
-              style={[styles.chip, tab.id === selectedTabId && styles.chipActive]}
-              onPress={() => setSelectedTabId(tab.id)}
-            >
-              <Text style={[styles.chipText, tab.id === selectedTabId && styles.chipTextActive]}>
-                {tab.name} {counts[tab.id] ?? 0}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity style={styles.chipAdd} onPress={() => openNameModal('create')}>
-            <Text style={styles.chipAddText}>＋ タブを作る</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </View>
-
       {screenError && <Text style={styles.error}>{screenError}</Text>}
 
-      {!selectedTab ? (
-        <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>まだタブがありません</Text>
-          <Text style={styles.emptyText}>
-            「家族」「旅行」など自分だけのタブを作って、写真を分けて見られます。
-          </Text>
-          <TouchableOpacity style={styles.primaryButton} onPress={() => openNameModal('create')}>
-            <Text style={styles.primaryButtonText}>タブを作る</Text>
-          </TouchableOpacity>
-        </View>
+      {!openTab ? (
+        state.tabs.length === 0 ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyTitle}>まだタブがありません</Text>
+            <Text style={styles.emptyText}>
+              「家族」「旅行」など自分だけのタブを作って、写真を分けて見られます。
+            </Text>
+            <TouchableOpacity style={styles.primaryButton} onPress={() => openNameModal('create')}>
+              <Text style={styles.primaryButtonText}>タブを作る</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <ScrollView contentContainerStyle={styles.cardGrid}>
+            {state.tabs.map((tab) => {
+              const coverId = getTabPhotoIds(state, tab.id)[0];
+              return (
+                <TouchableOpacity
+                  key={tab.id}
+                  style={styles.card}
+                  onPress={() => setOpenTabId(tab.id)}
+                  accessibilityLabel={`${tab.name}、${counts[tab.id] ?? 0}枚`}
+                >
+                  {coverId ? (
+                    <AssetThumb assetId={coverId} size={CARD_SIZE} borderRadius={14} />
+                  ) : (
+                    <View style={styles.cardEmpty}>
+                      <Text style={styles.cardEmptyText}>写真なし</Text>
+                    </View>
+                  )}
+                  <Text style={styles.cardName} numberOfLines={1}>
+                    {tab.name}
+                  </Text>
+                  <Text style={styles.cardCount}>{counts[tab.id] ?? 0}枚</Text>
+                </TouchableOpacity>
+              );
+            })}
+            <TouchableOpacity style={styles.card} onPress={() => openNameModal('create')}>
+              <View style={styles.cardAdd}>
+                <Text style={styles.cardAddPlus}>＋</Text>
+                <Text style={styles.cardAddText}>タブを作る</Text>
+              </View>
+            </TouchableOpacity>
+          </ScrollView>
+        )
       ) : (
         <>
           <View style={styles.tabHeader}>
+            <TouchableOpacity onPress={() => setOpenTabId(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+              <Text style={styles.back}>← 一覧</Text>
+            </TouchableOpacity>
             <Text style={styles.tabTitle} numberOfLines={1}>
-              {selectedTab.name}
+              {openTab.name}
             </Text>
             <TouchableOpacity onPress={() => openNameModal('rename')}>
               <Text style={styles.link}>名前を変更</Text>
@@ -175,18 +205,16 @@ export default function PhotoTabsScreen() {
           </View>
 
           <FlatList
-            key={selectedTab.id}
+            key={openTab.id}
             data={photoIds}
-            numColumns={COLUMNS}
+            numColumns={PHOTO_COLUMNS}
             keyExtractor={(id) => id}
             contentContainerStyle={styles.grid}
             columnWrapperStyle={styles.row}
-            ListEmptyComponent={
-              <Text style={styles.gridEmpty}>このタブにはまだ写真がありません</Text>
-            }
+            ListEmptyComponent={<Text style={styles.gridEmpty}>このタブにはまだ写真がありません</Text>}
             renderItem={({ item: id }) => (
               <TouchableOpacity onPress={() => setActionPhotoId(id)}>
-                <AssetThumb assetId={id} size={THUMB_SIZE} />
+                <AssetThumb assetId={id} size={PHOTO_SIZE} />
               </TouchableOpacity>
             )}
           />
@@ -197,7 +225,7 @@ export default function PhotoTabsScreen() {
         </>
       )}
 
-      <Modal visible={nameModalMode !== null} transparent animationType="fade">
+      <Modal visible={nameModalMode !== null} transparent animationType="fade" onRequestClose={() => setNameModalMode(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>
@@ -224,11 +252,11 @@ export default function PhotoTabsScreen() {
         </View>
       </Modal>
 
-      <Modal visible={actionPhotoId !== null} transparent animationType="fade">
+      <Modal visible={actionPhotoId !== null} transparent animationType="fade" onRequestClose={() => setActionPhotoId(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             {state.tabs
-              .filter((t) => t.id !== selectedTabId)
+              .filter((t) => t.id !== openTabId)
               .map((tab) => (
                 <TouchableOpacity
                   key={tab.id}
@@ -253,7 +281,7 @@ export default function PhotoTabsScreen() {
 
       <PhotoPickerModal
         visible={pickerVisible}
-        tabName={selectedTab?.name ?? ''}
+        tabName={openTab?.name ?? ''}
         alreadyInTabIds={photoIds}
         onClose={() => setPickerVisible(false)}
         onConfirm={handleAddPhotos}
@@ -264,38 +292,51 @@ export default function PhotoTabsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
-  chipBar: { paddingTop: 12 },
-  chips: { paddingHorizontal: PADDING, gap: 8, alignItems: 'center' },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 18,
-    backgroundColor: '#f2f2f2',
-  },
-  chipActive: { backgroundColor: '#333' },
-  chipText: { fontSize: 13, color: '#666' },
-  chipTextActive: { color: '#fff', fontWeight: '600' },
-  chipAdd: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    borderStyle: 'dashed',
-  },
-  chipAddText: { fontSize: 13, color: '#666' },
   error: { color: '#e74c3c', fontSize: 12, paddingHorizontal: PADDING, marginTop: 8 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   emptyTitle: { fontSize: 16, fontWeight: '600' },
   emptyText: { fontSize: 13, color: '#888', marginTop: 8, textAlign: 'center' },
+  cardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: CARD_GAP,
+    paddingHorizontal: PADDING,
+    paddingTop: 16,
+    paddingBottom: 24,
+  },
+  card: { width: CARD_SIZE },
+  cardEmpty: {
+    width: CARD_SIZE,
+    height: CARD_SIZE,
+    borderRadius: 14,
+    backgroundColor: '#f2f2f2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardEmptyText: { fontSize: 12, color: '#aaa' },
+  cardAdd: {
+    width: CARD_SIZE,
+    height: CARD_SIZE,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardAddPlus: { fontSize: 28, color: '#888' },
+  cardAddText: { fontSize: 13, color: '#888', marginTop: 4 },
+  cardName: { fontSize: 15, fontWeight: '600', marginTop: 8 },
+  cardCount: { fontSize: 12, color: '#999', marginTop: 2 },
   tabHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 14,
     paddingHorizontal: PADDING,
     paddingTop: 16,
     paddingBottom: 10,
   },
+  back: { fontSize: 13, color: '#666' },
   tabTitle: { flex: 1, fontSize: 18, fontWeight: '600' },
   link: { fontSize: 13, color: '#666' },
   linkDanger: { fontSize: 13, color: '#e74c3c' },
