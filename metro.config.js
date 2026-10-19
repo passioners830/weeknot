@@ -1,6 +1,8 @@
-const { getDefaultConfig } = require('expo/metro-config');
+const {
+  getSentryExpoConfig
+} = require("@sentry/react-native/metro");
 
-const config = getDefaultConfig(__dirname);
+const config = getSentryExpoConfig(__dirname);
 config.resolver.unstable_enablePackageExports = false;
 // Windows Metro has a resolution bug with the "module" main field (.mjs paths
 // that exist on disk still fail to resolve), so force main/commonjs instead.

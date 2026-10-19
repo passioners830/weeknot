@@ -17,6 +17,7 @@ import AdminScreen from './components/AdminScreen';
 import AuthScreen from './components/AuthScreen';
 import FeedScreen from './components/FeedScreen';
 import HistoryScreen from './components/HistoryScreen';
+import PhotoTabsScreen from './components/PhotoTabsScreen';
 import SelectPhotosScreen from './components/SelectPhotosScreen';
 import ShareScreen from './components/ShareScreen';
 import SwipeScreen from './components/SwipeScreen';
@@ -29,16 +30,25 @@ import { ensureWeeklyReminderScheduled, registerPushToken, sendTestReminderNow }
 import { getMyDisplayName, updateDisplayName } from './lib/profile';
 import { isSupabaseConfigured } from './lib/supabase';
 import type { Photo } from './types';
+import * as Sentry from '@sentry/react-native';
 
-type Tab = 'organize' | 'feed' | 'history' | 'admin';
+Sentry.init({
+  dsn: 'https://00392eeeed485a629ca25efdd7485002@o4512186974666752.ingest.us.sentry.io/4512186994655233',
 
-export default function App() {
+  // 家族写真を扱うアプリのため、IPアドレス等の個人情報送信や画面録画（セッションリプレイ）は無効のままにする
+  sendDefaultPii: false,
+  enableLogs: true,
+});
+
+type Tab = 'organize' | 'sorted' | 'feed' | 'history' | 'admin';
+
+export default Sentry.wrap(function App() {
   return (
     <GestureHandlerRootView style={styles.container}>
       <AppInner />
     </GestureHandlerRootView>
   );
-}
+});
 
 function AppInner() {
   const [session, setSession] = useState<Session | null>(null);
@@ -214,6 +224,9 @@ function AppInner() {
         <TouchableOpacity onPress={() => setTab('organize')} style={styles.tabButton}>
           <Text style={[styles.tabLabel, tab === 'organize' && styles.tabLabelActive]}>整理</Text>
         </TouchableOpacity>
+        <TouchableOpacity onPress={() => setTab('sorted')} style={styles.tabButton}>
+          <Text style={[styles.tabLabel, tab === 'sorted' && styles.tabLabelActive]}>分類</Text>
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => setTab('feed')} style={styles.tabButton}>
           <Text style={[styles.tabLabel, tab === 'feed' && styles.tabLabelActive]}>フィード</Text>
         </TouchableOpacity>
@@ -226,7 +239,9 @@ function AppInner() {
           </TouchableOpacity>
         )}
       </View>
-      {tab === 'feed' ? (
+      {tab === 'sorted' ? (
+        <PhotoTabsScreen />
+      ) : tab === 'feed' ? (
         <FeedScreen />
       ) : tab === 'history' ? (
         <HistoryScreen />

@@ -1,4 +1,5 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
+import { Platform } from 'react-native';
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -16,6 +17,31 @@ export async function getRecentPhotos(limit = 30): Promise<MediaLibrary.Asset[]>
     createdAfter: Date.now() - ONE_WEEK_MS,
   });
   return result.assets;
+}
+
+// Webにはカメラロールが無いので、整理画面のモック写真（id 100〜107）と同じIDを返す
+const WEB_MOCK_PHOTO_IDS = Array.from({ length: 8 }, (_, i) => String(100 + i));
+
+export async function getLibraryPhotoIds(limit = 90): Promise<string[]> {
+  if (Platform.OS === 'web') return WEB_MOCK_PHOTO_IDS;
+  const result = await MediaLibrary.getAssetsAsync({
+    mediaType: MediaLibrary.MediaType.photo,
+    sortBy: [MediaLibrary.SortBy.creationTime],
+    first: limit,
+  });
+  return result.assets.map((asset) => asset.id);
+}
+
+// 端末から削除された写真などidから解決できない場合はnullを返す
+export async function resolvePhotoUriById(assetId: string): Promise<string | null> {
+  if (Platform.OS === 'web') return `https://picsum.photos/id/${assetId}/300/400`;
+  try {
+    const info = await MediaLibrary.getAssetInfoAsync(assetId);
+    if (!info) return null;
+    return info.localUri ?? info.uri;
+  } catch {
+    return null;
+  }
 }
 
 export async function resolveDisplayUri(asset: MediaLibrary.Asset): Promise<string> {

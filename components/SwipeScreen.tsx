@@ -5,6 +5,7 @@ import {
   Dimensions,
   Image,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { deletePhotos, getRecentPhotos, requestPermission, resolveDisplayUri } from '../lib/mediaLibrary';
+import { assignPhotosToTab, getPhotoTabsState, unassignPhotos, type PhotoTab } from '../lib/photoTabs';
 import type { Photo } from '../types';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -37,8 +39,16 @@ export default function SwipeScreen({ onDone }: Props) {
   const [index, setIndex] = useState(0);
   const [kept, setKept] = useState<Photo[]>([]);
   const [deletedAssetIds, setDeletedAssetIds] = useState<string[]>([]);
+  const [tabs, setTabs] = useState<PhotoTab[]>([]);
+  const [destinationTabId, setDestinationTabId] = useState<string | null>(null);
 
   const position = useRef(new Animated.ValueXY()).current;
+
+  useEffect(() => {
+    getPhotoTabsState()
+      .then((s) => setTabs(s.tabs))
+      .catch((e) => console.warn('タブの読み込みに失敗しました', e));
+  }, []);
 
   const loadPhotos = async () => {
     setLoadState('loading');
@@ -75,6 +85,7 @@ export default function SwipeScreen({ onDone }: Props) {
       if (Platform.OS !== 'web' && finalDeletedIds.length > 0) {
         try {
           await deletePhotos(finalDeletedIds);
+          await unassignPhotos(finalDeletedIds);
         } catch {
           // ユーザーがOSの削除確認をキャンセルした場合などは何もしない
         }
@@ -92,6 +103,11 @@ export default function SwipeScreen({ onDone }: Props) {
       const nextDeletedIds = direction === 'delete' ? [...deletedAssetIds, photo.id] : deletedAssetIds;
       if (direction === 'keep') {
         setKept(nextKept);
+        if (destinationTabId) {
+          assignPhotosToTab([photo.id], destinationTabId).catch((e) =>
+            console.warn('写真をタブに振り分けられませんでした', e)
+          );
+        }
       } else {
         setDeletedAssetIds(nextDeletedIds);
       }
@@ -102,7 +118,7 @@ export default function SwipeScreen({ onDone }: Props) {
         finish(nextKept, nextDeletedIds);
       }
     },
-    [photos, index, kept, deletedAssetIds, position, finish]
+    [photos, index, kept, deletedAssetIds, destinationTabId, position, finish]
   );
 
   const forceSwipe = useCallback(
@@ -212,6 +228,28 @@ export default function SwipeScreen({ onDone }: Props) {
       <Text style={styles.counter}>
         {index + 1} / {photos.length}
       </Text>
+      {tabs.length > 0 && (
+        <View style={styles.destinationRow}>
+          <Text style={styles.destinationLabel}>キープ先</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.destinationChips}
+          >
+            {[{ id: null, name: 'なし' }, ...tabs].map((tab) => (
+              <TouchableOpacity
+                key={tab.id ?? 'none'}
+                style={[styles.chip, tab.id === destinationTabId && styles.chipActive]}
+                onPress={() => setDestinationTabId(tab.id)}
+              >
+                <Text style={[styles.chipText, tab.id === destinationTabId && styles.chipTextActive]}>
+                  {tab.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
       <View style={styles.cardStack}>
         {nextPhoto && (
           <View style={[styles.card, styles.cardBehind]}>
@@ -300,7 +338,39 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#888',
     marginTop: 4,
-    marginBottom: 20,
+    marginBottom: 12,
+  },
+  destinationRow: {
+    width: CARD_WIDTH,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  destinationLabel: {
+    fontSize: 12,
+    color: '#888',
+    marginRight: 8,
+  },
+  destinationChips: {
+    gap: 6,
+    alignItems: 'center',
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#f2f2f2',
+  },
+  chipActive: {
+    backgroundColor: '#333',
+  },
+  chipText: {
+    fontSize: 12,
+    color: '#666',
+  },
+  chipTextActive: {
+    color: '#fff',
+    fontWeight: '600',
   },
   cardStack: {
     width: CARD_WIDTH,

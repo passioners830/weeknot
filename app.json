@@ -4,7 +4,7 @@
     "ios_app_id": "ca-app-pub-7963050408481805~3250010052"
   },
   "expo": {
-    "name": "photo-app",
+    "name": "weeknot",
     "slug": "photo-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,7 +16,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "12"
+      "buildNumber": "14"
     },
     "android": {
       "adaptiveIcon": {
@@ -61,6 +61,14 @@
         {
           "androidAppId": "ca-app-pub-7963050408481805~8590800798",
           "iosAppId": "ca-app-pub-7963050408481805~3250010052"
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "project": "weeknot",
+          "organization": "passioners"
         }
       ]
     ],

@@ -383,7 +383,7 @@ begin
     message := coalesce(actor_name, '誰か') || 'さんがコメントしました: ' || new.body;
   end if;
 
-  perform public.send_expo_push(owner_token, 'しゅうまとめ', message);
+  perform public.send_expo_push(owner_token, 'weeknot', message);
 
   return new;
 end;
@@ -458,7 +458,7 @@ begin
   loop
     perform public.send_expo_push(
       admin_row.push_token,
-      'しゅうまとめ',
+      'weeknot',
       coalesce(reporter_name, '誰か') || 'さんが投稿を通報しました: ' || new.reason
     );
   end loop;
