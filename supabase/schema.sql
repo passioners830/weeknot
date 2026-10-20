@@ -496,3 +496,160 @@ create policy "highlights: select if app admin" on public.highlights
 -- クライアントからは直接見えないため、UI表示用にprofiles側にも複製しておく
 -- （suspend-user Edge Functionがservice role権限でBAN/UNBANと同時に更新する）
 alter table public.profiles add column if not exists is_suspended boolean not null default false;
+
+-- 写真リクエスト: サークル内の投稿の写真を「ほしい」と頼み、持ち主が「送る/断る」を選ぶ
+-- （写真本体は投稿が見える人なら誰でも読めるため、承諾はアプリ上の同意の仕組みで、
+--   サーバー側で写真の取得そのものを止めるものではない）
+create table public.photo_requests (
+  id uuid primary key default gen_random_uuid(),
+  highlight_id uuid not null references public.highlights(id) on delete cascade,
+  photo_index integer not null check (photo_index >= 0),
+  requester_id uuid not null references auth.users(id) on delete cascade,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  status text not null default 'pending' check (status in ('pending', 'accepted', 'declined')),
+  created_at timestamptz not null default now(),
+  responded_at timestamptz,
+  unique (requester_id, highlight_id, photo_index),
+  check (requester_id <> owner_id)
+);
+
+create index photo_requests_owner_idx on public.photo_requests (owner_id, status);
+create index photo_requests_requester_idx on public.photo_requests (requester_id, created_at desc);
+
+alter table public.photo_requests enable row level security;
+
+create policy "photo_requests: select own" on public.photo_requests
+  for select using (requester_id = auth.uid() or owner_id = auth.uid());
+
+create policy "photo_requests: insert own" on public.photo_requests
+  for insert with check (requester_id = auth.uid());
+
+-- 返事できるのは持ち主だけ。未回答（pending）のものを送る/断るにだけ変えられる
+create policy "photo_requests: owner can respond" on public.photo_requests
+  for update using (owner_id = auth.uid() and status = 'pending')
+  with check (owner_id = auth.uid() and status in ('accepted', 'declined'));
+
+-- 更新できる列はstatusだけ（持ち主や写真の指定などは後から書き換えられない）
+revoke update on public.photo_requests from anon, authenticated;
+grant update (status) on public.photo_requests to authenticated;
+
+-- 登録時の検証。持ち主(owner_id)・状態はクライアントの指定ではなくサーバー側で決める
+-- （security definerなので、見えない投稿の存在確認やブロック状況もRLSに邪魔されず判定できる）
+create or replace function public.validate_photo_request()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target record;
+  recent_count integer;
+begin
+  select user_id, visibility, photo_count into target
+  from public.highlights where id = new.highlight_id;
+
+  if not found then
+    raise exception 'その投稿は見つかりません';
+  end if;
+
+  if target.visibility <> 'circle' or not public.is_highlight_visible_via_circle(new.highlight_id) then
+    raise exception 'この写真はリクエストできません';
+  end if;
+
+  if target.user_id = new.requester_id then
+    raise exception '自分の写真にはリクエストできません';
+  end if;
+
+  if new.photo_index >= target.photo_count then
+    raise exception 'その写真は見つかりません';
+  end if;
+
+  if exists (
+    select 1 from public.blocks
+    where (blocker_id = target.user_id and blocked_id = new.requester_id)
+       or (blocker_id = new.requester_id and blocked_id = target.user_id)
+  ) then
+    raise exception 'この写真はリクエストできません';
+  end if;
+
+  -- 通知の連打などの嫌がらせを防ぐため、1日あたりの件数に上限を設ける
+  select count(*) into recent_count from public.photo_requests
+  where requester_id = new.requester_id and created_at > now() - interval '1 day';
+  if recent_count >= 30 then
+    raise exception 'リクエストが多すぎます。しばらくしてからもう一度お試しください';
+  end if;
+
+  new.owner_id := target.user_id;
+  new.status := 'pending';
+  new.responded_at := null;
+  return new;
+end;
+$$;
+
+create trigger photo_request_validate
+  before insert on public.photo_requests
+  for each row execute function public.validate_photo_request();
+
+create or replace function public.touch_photo_request_response()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.status <> old.status then
+    new.responded_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+create trigger photo_request_responded
+  before update on public.photo_requests
+  for each row execute function public.touch_photo_request_response();
+
+-- リクエストが来たら持ち主に、「送る」を選んだら依頼した人にプッシュ通知を送る
+-- （断った場合は通知しない）
+create or replace function public.notify_on_photo_request()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  recipient_id uuid;
+  other_id uuid;
+  recipient_token text;
+  other_name text;
+  message_template text;
+begin
+  if TG_OP = 'INSERT' then
+    recipient_id := new.owner_id;
+    other_id := new.requester_id;
+    message_template := '%sさんが写真を希望しています';
+  elsif new.status = 'accepted' and old.status = 'pending' then
+    recipient_id := new.requester_id;
+    other_id := new.owner_id;
+    message_template := '%sさんが写真を送ってくれました';
+  else
+    return new;
+  end if;
+
+  select push_token into recipient_token from public.profiles where id = recipient_id;
+  if recipient_token is null then
+    return new;
+  end if;
+
+  select display_name into other_name from public.profiles where id = other_id;
+
+  perform public.send_expo_push(
+    recipient_token,
+    'weeknot',
+    format(message_template, coalesce(other_name, '誰か'))
+  );
+
+  return new;
+end;
+$$;
+
+create trigger on_photo_request_notify
+  after insert or update on public.photo_requests
+  for each row execute function public.notify_on_photo_request();

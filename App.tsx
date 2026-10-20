@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,6 +18,7 @@ import AuthScreen from './components/AuthScreen';
 import FeedScreen from './components/FeedScreen';
 import HistoryScreen from './components/HistoryScreen';
 import PhotoTabsScreen from './components/PhotoTabsScreen';
+import RequestsScreen from './components/RequestsScreen';
 import SelectPhotosScreen from './components/SelectPhotosScreen';
 import ShareScreen from './components/ShareScreen';
 import SwipeableTabs from './components/SwipeableTabs';
@@ -28,6 +29,7 @@ import { amIAppAdmin } from './lib/admin';
 import { getCurrentSession, signOut, subscribeToAuthChanges } from './lib/auth';
 import { getErrorMessage } from './lib/errors';
 import { hasOrganizedThisWeek, markOrganizedNow } from './lib/organizeHistory';
+import { countIncomingPending } from './lib/photoRequests';
 import { ensureWeeklyReminderScheduled, registerPushToken, sendTestReminderNow } from './lib/notifications';
 import { getMyDisplayName, updateDisplayName } from './lib/profile';
 import { isSupabaseConfigured } from './lib/supabase';
@@ -42,10 +44,10 @@ Sentry.init({
   enableLogs: true,
 });
 
-type Tab = 'organize' | 'sorted' | 'feed' | 'history' | 'admin';
+type Tab = 'organize' | 'sorted' | 'feed' | 'requests' | 'history' | 'admin';
 
 // タブバーの並びと同じ順。スワイプでの画面移動もこの順に隣へ動く
-const BASE_TAB_ORDER: Tab[] = ['organize', 'sorted', 'feed', 'history'];
+const BASE_TAB_ORDER: Tab[] = ['organize', 'sorted', 'feed', 'requests', 'history'];
 
 export default Sentry.wrap(function App() {
   return (
@@ -68,6 +70,7 @@ function AppInner() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [initialTabResolved, setInitialTabResolved] = useState(false);
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
 
   const handleSwipeDone = (keptPhotos: Photo[]) => {
     setKept(keptPhotos);
@@ -152,6 +155,19 @@ function AppInner() {
       .catch((e) => console.warn('整理の完了状況を読み込めませんでした', e))
       .finally(() => setInitialTabResolved(true));
   }, []);
+
+  const refreshPendingRequestCount = useCallback(() => {
+    countIncomingPending()
+      .then(setPendingRequestCount)
+      .catch(() => {
+        // バッジが出せなくても、アプリの他の機能は使えるようにする
+      });
+  }, []);
+
+  // 起動時と、タブを切り替えるたびに、返事待ちのリクエスト件数を最新にする
+  useEffect(() => {
+    if (session) refreshPendingRequestCount();
+  }, [session, tab, refreshPendingRequestCount]);
 
   const tabOrder = useMemo<Tab[]>(
     () => (isAdmin ? [...BASE_TAB_ORDER, 'admin'] : BASE_TAB_ORDER),
@@ -252,6 +268,14 @@ function AppInner() {
         <TouchableOpacity onPress={() => setTab('feed')} style={styles.tabButton}>
           <Text style={[styles.tabLabel, tab === 'feed' && styles.tabLabelActive]}>フィード</Text>
         </TouchableOpacity>
+        <TouchableOpacity onPress={() => setTab('requests')} style={styles.tabButton}>
+          <Text style={[styles.tabLabel, tab === 'requests' && styles.tabLabelActive]}>リクエスト</Text>
+          {pendingRequestCount > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{pendingRequestCount > 9 ? '9+' : pendingRequestCount}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
         <TouchableOpacity onPress={() => setTab('history')} style={styles.tabButton}>
           <Text style={[styles.tabLabel, tab === 'history' && styles.tabLabelActive]}>履歴</Text>
         </TouchableOpacity>
@@ -267,6 +291,8 @@ function AppInner() {
           <PhotoTabsScreen />
         ) : tab === 'feed' ? (
           <FeedScreen />
+        ) : tab === 'requests' ? (
+          <RequestsScreen onChanged={refreshPendingRequestCount} />
         ) : tab === 'history' ? (
           <HistoryScreen />
         ) : tab === 'admin' ? (
@@ -323,14 +349,31 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    gap: 20,
+    paddingHorizontal: 16,
+    gap: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#eee',
     paddingBottom: 10,
   },
   tabButton: {
     paddingVertical: 4,
+  },
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -9,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    backgroundColor: '#e8577a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
   },
   tabLabel: {
     fontSize: 14,

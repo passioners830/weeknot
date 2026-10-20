@@ -7,7 +7,12 @@ jest.mock('../supabase', () => ({
 
 /* eslint-disable import/first -- jest.mock above must run before these imports resolve */
 import { supabase } from '../supabase';
-import { deleteHighlightPhotos, getHighlightPhotoUrls, uploadHighlightPhotos } from '../photos';
+import {
+  deleteHighlightPhotos,
+  getHighlightPhotoUrl,
+  getHighlightPhotoUrls,
+  uploadHighlightPhotos,
+} from '../photos';
 /* eslint-enable import/first */
 
 const mockGetUser = supabase.auth.getUser as jest.Mock;
@@ -67,6 +72,30 @@ describe('getHighlightPhotoUrls', () => {
     mockStorageFrom.mockReturnValue(bucket);
 
     await expect(getHighlightPhotoUrls('author1', 'h1')).rejects.toThrow('list failed');
+  });
+});
+
+describe('getHighlightPhotoUrl', () => {
+  it('signs the path for the n-th photo of a highlight', async () => {
+    const bucket = makeStorageBucket({
+      createSignedUrl: { data: { signedUrl: 'https://example.com/2.jpg' }, error: null },
+    });
+    mockStorageFrom.mockReturnValue(bucket);
+
+    const url = await getHighlightPhotoUrl('author1', 'h1', 2);
+
+    expect(bucket.createSignedUrl).toHaveBeenCalledWith('author1/h1/2.jpg', 60 * 60);
+    expect(url).toBe('https://example.com/2.jpg');
+  });
+
+  it('returns null when no url comes back and throws on an error', async () => {
+    mockStorageFrom.mockReturnValueOnce(makeStorageBucket({}));
+    expect(await getHighlightPhotoUrl('author1', 'h1', 0)).toBeNull();
+
+    mockStorageFrom.mockReturnValueOnce(
+      makeStorageBucket({ createSignedUrl: { data: null, error: new Error('sign failed') } })
+    );
+    await expect(getHighlightPhotoUrl('author1', 'h1', 0)).rejects.toThrow('sign failed');
   });
 });
 

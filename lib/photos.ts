@@ -68,6 +68,19 @@ export async function getHighlightPhotoUrls(authorId: string, highlightId: strin
   return (signed ?? []).map((s) => s.signedUrl).filter((url): url is string => Boolean(url));
 }
 
+// アップロード時のパス規約（{user_id}/{highlight_id}/{n}.jpg）から、n枚目の署名付きURLを返す
+export async function getHighlightPhotoUrl(
+  authorId: string,
+  highlightId: string,
+  photoIndex: number
+): Promise<string | null> {
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(`${authorId}/${highlightId}/${photoIndex}.jpg`, 60 * 60);
+  if (error) throw error;
+  return data?.signedUrl ?? null;
+}
+
 export async function deleteHighlightPhotos(authorId: string, highlightId: string): Promise<void> {
   const prefix = `${authorId}/${highlightId}`;
   const { data: files, error } = await supabase.storage.from(BUCKET).list(prefix);

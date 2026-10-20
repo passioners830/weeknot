@@ -16,10 +16,17 @@ import {
   View,
 } from 'react-native';
 import AdBanner from './AdBanner';
+import PhotoRequestButton from './PhotoRequestButton';
 import { blockUser } from '../lib/blocks';
 import { addComment, deleteComment, getCommentsForHighlights, Comment } from '../lib/comments';
 import { getErrorMessage } from '../lib/errors';
 import { deleteHighlight, getFeed, FeedItem } from '../lib/highlights';
+import {
+  getMyRequestStatuses,
+  requestKey,
+  requestPhoto,
+  type RequestStatus,
+} from '../lib/photoRequests';
 import { getHighlightPhotoUrls } from '../lib/photos';
 import { getReactionsForHighlights, toggleReaction, ReactionSummary } from '../lib/reactions';
 import { reportHighlight } from '../lib/reports';
@@ -45,7 +52,10 @@ export default function FeedScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<{ urls: string[]; index: number } | null>(null);
+  const [viewer, setViewer] = useState<{ item: FeedItem; urls: string[]; index: number } | null>(null);
+  const [requestStatuses, setRequestStatuses] = useState<Record<string, RequestStatus>>({});
+  const [requestingKey, setRequestingKey] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [actionSheetItem, setActionSheetItem] = useState<FeedItem | null>(null);
@@ -69,6 +79,10 @@ export default function FeedScreen() {
       setItems(page.items);
       setNextCursor(page.nextCursor);
       await loadReactionsAndComments(page.items.map((f) => f.id));
+      // リクエスト機能の取得に失敗しても、フィード自体は表示を続ける
+      getMyRequestStatuses()
+        .then(setRequestStatuses)
+        .catch(() => {});
     } catch (e) {
       setError(getErrorMessage(e, 'フィードの取得に失敗しました'));
     }
@@ -223,6 +237,22 @@ export default function FeedScreen() {
     }
   };
 
+  const handleRequestPhoto = async () => {
+    if (!viewer) return;
+    const { item, index } = viewer;
+    const key = requestKey(item.id, index);
+    setRequestingKey(key);
+    setRequestError(null);
+    try {
+      await requestPhoto({ highlightId: item.id, ownerId: item.authorId, photoIndex: index });
+      setRequestStatuses((prev) => ({ ...prev, [key]: 'pending' }));
+    } catch (e) {
+      setRequestError(getErrorMessage(e, 'リクエストを送れませんでした'));
+    } finally {
+      setRequestingKey(null);
+    }
+  };
+
   const handleBlock = (item: FeedItem) => {
     const message = `${item.authorName}さんをブロックしますか？\n今後、この人の投稿がフィードに表示されなくなります。`;
     if (Platform.OS === 'web') {
@@ -274,7 +304,10 @@ export default function FeedScreen() {
             onSubmitComment={() => handleSubmitComment(item.id)}
             onDeleteComment={(commentId) => handleDeleteComment(item.id, commentId)}
             onDelete={() => handleDelete(item.id)}
-            onOpenPhoto={(urls, index) => setViewer({ urls, index })}
+            onOpenPhoto={(urls, index) => {
+              setRequestError(null);
+              setViewer({ item, urls, index });
+            }}
             onOpenActions={() => openActionSheet(item)}
           />
         )}
@@ -296,6 +329,11 @@ export default function FeedScreen() {
               pagingEnabled
               showsHorizontalScrollIndicator={false}
               contentOffset={{ x: viewer.index * SCREEN_WIDTH, y: 0 }}
+              scrollEventThrottle={16}
+              onScroll={(e) => {
+                const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+                setViewer((v) => (v && v.index !== index ? { ...v, index } : v));
+              }}
             >
               {viewer.urls.map((url, i) => (
                 <View key={i} style={styles.viewerPage}>
@@ -303,6 +341,16 @@ export default function FeedScreen() {
                 </View>
               ))}
             </ScrollView>
+          )}
+          {viewer && !viewer.item.isMine && viewer.item.visibility === 'circle' && (
+            <View style={styles.viewerFooter}>
+              {requestError && <Text style={styles.viewerError}>{requestError}</Text>}
+              <PhotoRequestButton
+                status={requestStatuses[requestKey(viewer.item.id, viewer.index)]}
+                busy={requestingKey === requestKey(viewer.item.id, viewer.index)}
+                onPress={handleRequestPhoto}
+              />
+            </View>
           )}
         </View>
       </Modal>
@@ -730,6 +778,19 @@ const styles = StyleSheet.create({
   viewerCloseText: {
     color: '#fff',
     fontSize: 18,
+  },
+  viewerFooter: {
+    position: 'absolute',
+    bottom: 48,
+    left: 20,
+    right: 20,
+    alignItems: 'center',
+    gap: 10,
+  },
+  viewerError: {
+    color: '#ff8a80',
+    fontSize: 13,
+    textAlign: 'center',
   },
   viewerPage: {
     width: SCREEN_WIDTH,

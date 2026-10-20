@@ -1,6 +1,6 @@
 // Supabaseのクエリビルダー（.from().select().eq()...のようなメソッドチェーンで、
 // 最後にawaitすると{data, error}に解決される）を模倣するテスト用モック
-export function makeQueryBuilder(result: { data: unknown; error: unknown }) {
+export function makeQueryBuilder(result: { data: unknown; error: unknown; count?: number | null }) {
   const builder: Record<string, unknown> = {};
   const chain = () => builder;
   builder.select = jest.fn(chain);
@@ -31,9 +31,13 @@ export function makeStorageBucket(overrides: {
   list?: { data: unknown; error: unknown };
   upload?: { data: unknown; error: unknown };
   createSignedUrls?: { data: unknown; error: unknown };
+  createSignedUrl?: { data: unknown; error: unknown };
   remove?: { data: unknown; error: unknown };
 }) {
   return {
+    createSignedUrl: jest
+      .fn()
+      .mockResolvedValue(overrides.createSignedUrl ?? { data: null, error: null }),
     list: jest.fn().mockResolvedValue(overrides.list ?? { data: [], error: null }),
     upload: jest.fn().mockResolvedValue(overrides.upload ?? { data: null, error: null }),
     createSignedUrls: jest

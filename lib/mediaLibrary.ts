@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { Platform } from 'react-native';
 
@@ -52,6 +53,20 @@ export async function resolveDisplayUri(asset: MediaLibrary.Asset): Promise<stri
   } catch {
     return asset.uri;
   }
+}
+
+// 他のユーザーから送ってもらった写真（署名付きURL）を端末のカメラロールに保存する
+export async function savePhotoFromUrl(url: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    window.open(url, '_blank');
+    return;
+  }
+  const { status } = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
+  if (status !== 'granted') {
+    throw new Error('写真の保存が許可されていません。設定アプリで許可してください');
+  }
+  const { uri } = await FileSystem.downloadAsync(url, `${FileSystem.cacheDirectory}received-${Date.now()}.jpg`);
+  await MediaLibrary.saveToLibraryAsync(uri);
 }
 
 export async function deletePhotos(assetIds: string[]): Promise<void> {
